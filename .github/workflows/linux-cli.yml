@@ -99,7 +99,13 @@ jobs:
           exec "$root/libexec/bag2mkv" "$@"
           EOF
           chmod +x "dist/$NAME/bin/bag2mkv" "dist/$NAME/libexec/bag2mkv"
-          tar -C dist -czf "$NAME.tar.gz" "$NAME"
+          if ! tar -C dist -czf "$NAME.tar.gz" "$NAME" 2>tar.err; then
+            echo "::error::tar failed for NAME=$NAME"
+            while IFS= read -r line; do
+              echo "::error::tar: $line"
+            done < tar.err
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
