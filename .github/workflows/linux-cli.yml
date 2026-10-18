@@ -64,15 +64,28 @@ jobs:
 
       - name: Package CLI
         run: |
-          set -eux
+          set -euxo pipefail
+          trap 'echo "::error::Package failed: $BASH_COMMAND"' ERR
           NAME=bag2mkv-$(./build/bag2mkv --version | awk '{print $2}')-linux-x86_64-cli
           mkdir -p "dist/$NAME/bin" "dist/$NAME/libexec" "dist/$NAME/lib" \
                    "dist/$NAME/share/doc/bag2mkv" "dist/$NAME/share/licenses"
           cp build/bag2mkv "dist/$NAME/libexec/bag2mkv"
-          cp "$K4A_ROOT"/lib/libk4a.so.1.4.1 "dist/$NAME/lib/libk4a.so.1.4"
-          cp "$K4A_ROOT"/lib/libk4arecord.so.1.4.0 "dist/$NAME/lib/libk4arecord.so.1.4"
-          cp "$K4A_ROOT"/lib/libOrbbecSDK.so.2.5.5 "dist/$NAME/lib/libOrbbecSDK.so.2"
-          cp "$K4A_ROOT"/lib/libdepthengine.so.2.0 "dist/$NAME/lib/libdepthengine.so.2.0" || true
+          copy_runtime() {
+            pattern="$1"
+            dest="$2"
+            required="$3"
+            src=$(find "$K4A_ROOT/lib" -maxdepth 1 -name "$pattern" -print -quit)
+            if [ -n "$src" ]; then
+              cp -L "$src" "dist/$NAME/lib/$dest"
+            elif [ "$required" = "yes" ]; then
+              echo "missing required runtime: $pattern" >&2
+              return 1
+            fi
+          }
+          copy_runtime 'libk4a.so.1*' 'libk4a.so.1.4' yes
+          copy_runtime 'libk4arecord.so.1*' 'libk4arecord.so.1.4' yes
+          copy_runtime 'libOrbbecSDK.so.2*' 'libOrbbecSDK.so.2' yes
+          copy_runtime 'libdepthengine.so.2*' 'libdepthengine.so.2.0' no
           cp "$K4A_ROOT"/lib/OrbbecSDKConfig.xml "dist/$NAME/lib/OrbbecSDKConfig.xml" || true
           cp README.md README.zh-CN.md CHANGELOG.md LICENSE "dist/$NAME/share/doc/bag2mkv/"
           cp third_party/lz4/LICENSE third_party/bzip2/COPYING third_party/sqlite/README.txt \
