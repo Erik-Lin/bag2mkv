@@ -2,6 +2,7 @@
 build/
 tests/
 out/
+release/
 _scratch/
 _scratch_*
 *.tmp
