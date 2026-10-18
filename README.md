@@ -42,7 +42,6 @@
 - [FAQ](#faq)
 - [Contributing](#contributing)
 - [License](#license)
-- [Repository description](#repository-description)
 
 ---
 
@@ -502,15 +501,3 @@ MIT License. Copyright © 林山力.
 - SQLite: [third_party/sqlite/README.txt](third_party/sqlite/README.txt)
 - stb_image: [third_party/stb/LICENSE.txt](third_party/stb/LICENSE.txt)
 - Orbbec K4A runtime: follow the upstream Orbbec SDK license/terms.
-
----
-
-## Repository description
-
-**Short GitHub description:**
-
-> Lossless RGB-D conversion between Orbbec ROSBAG, Azure Kinect MKV, and ROS 1/2 bags — with a Windows CLI and GUI.
-
-**Long description:**
-
-> `bag2mkv` is a lossless, verifiable RGB-D conversion toolkit. It converts Orbbec ROSBAG recordings to Azure Kinect-compatible MKV, rebuilds Orbbec bags from K4A MKV, and imports/exports standard ROS1 and ROS2 bags. It preserves original JPEG color, bit-exact depth, timestamps, and device metadata, and includes an independent verifier. The Windows release ships both a CLI and a native GUI; ROS conversion is available from the command line.
