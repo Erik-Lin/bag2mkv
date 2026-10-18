@@ -66,7 +66,12 @@ jobs:
         run: |
           set -euxo pipefail
           trap 'echo "::error::Package failed: $BASH_COMMAND"' ERR
-          NAME=bag2mkv-$(./build/bag2mkv --version | awk '{print $2}')-linux-x86_64-cli
+          VERSION=$(./build/bag2mkv --version 2>/dev/null | awk '$1 == "bag2mkv" { print $2; exit }')
+          if [ -z "$VERSION" ]; then
+            echo "could not determine bag2mkv version" >&2
+            exit 1
+          fi
+          NAME=bag2mkv-${VERSION}-linux-x86_64-cli
           mkdir -p "dist/$NAME/bin" "dist/$NAME/libexec" "dist/$NAME/lib" \
                    "dist/$NAME/share/doc/bag2mkv" "dist/$NAME/share/licenses"
           cp build/bag2mkv "dist/$NAME/libexec/bag2mkv"
