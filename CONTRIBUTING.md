@@ -56,14 +56,13 @@ ctest --test-dir build -C Release --output-on-failure
 
 ```powershell
 # 小体积快速回归（约 1.2 GB 输出）
-.\tests\run_sample.cmd -Color mjpg
+.\build\Release\bag2mkv.exe convert .\sample.bag -o .\out_mjpg.mkv --color mjpg --verify
 
 # 默认 BGRA + 原始 MJPEG 轨道（约 12.5 GB 输出）
-.\tests\run_sample.cmd
+.\build\Release\bag2mkv.exe convert .\sample.bag -o .\out.mkv --verify
 ```
 
-`tests/run_sample.ps1` 需要同目录或通过 `-Bag` 指定 bag；样本文件不会被提交。
-如果没有样本，也可以只跑 `ctest`，或自己准备一个短 bag。
+样本文件不会被提交；没有样本时只跑 `ctest` 即可。
 
 ## 代码约定
 

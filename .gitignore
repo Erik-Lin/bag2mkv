@@ -1,5 +1,6 @@
 # Build and generated artifacts
 build/
+tests/
 out/
 _scratch/
 _scratch_*

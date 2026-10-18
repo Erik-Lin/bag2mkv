@@ -14,7 +14,7 @@
 
 ### 1.1 仓库现状（重要）
 
-当前仓库已有 **v0.4.3 可运行实现**（C++17 + CMake，命令行 + Windows GUI）。除下面这些第三方/样本目录外，源码在 `src/`，构建文件是 `CMakeLists.txt`，测试在 `tests/`，使用说明在 `README.md`，贡献指南在 `CONTRIBUTING.md`，版本变化见 `CHANGELOG.md`，许可证是 `LICENSE`。
+当前仓库已有 **v0.4.3 可运行实现**（C++17 + CMake，命令行 + Windows GUI）。除下面这些第三方/样本目录外，源码在 `src/`，构建文件是 `CMakeLists.txt`，使用说明在 `README.md`，贡献指南在 `CONTRIBUTING.md`，版本变化见 `CHANGELOG.md`，许可证是 `LICENSE`。`tests/` 和 `build/` 是本机生成/测试目录，已加入 `.gitignore`，不提交。
 
 | 路径 | 内容 |
 |---|---|
@@ -543,10 +543,6 @@ src/
   util.hpp/.cpp         // SHA-256、base64、JSON escape、BE swap
 third_party/lz4/        // vendored LZ4
 third_party/bzip2/      // vendored bzip2 1.0.8（BSD-like）
-tests/
-  run_sample.ps1        // 样本转换 + verify 集成脚本（-Color bgra|mjpg）
-  run_sample.cmd        // 绕过 PowerShell 执行策略的包装
-  README.md
 ```
 
 构建目标：`bag2mkv_core`（静态库）+ `bag2mkv`（CLI）+ `bag2mkv-gui`（WIN32 GUI）。
@@ -613,17 +609,9 @@ CMake 的 post-build 会把 `azurekinectsdk/bin/*.dll` 复制到 `build/Release/
 .\build\Release\bag2mkv-gui.exe    # GUI；可传 [input-dir] [output-dir] [--mjpg] [--start]
 .\build\Release\bag2mkv-gui.exe --batch <input-dir> --batch-output <output-dir> [--mjpg]
 .\build\Release\bag2mkv-gui.exe --to-bag <input.mkv> [--to-bag-output <output.bag>]
-.\tests\run_sample.cmd         # 默认 BGRA + 源轨，转换 + verify；删除 12.5 GB 输出
-.\tests\run_sample.cmd -Color mjpg   # 小体积 MJPG-only 测试
 ```
 
 GUI 的“输入目录/输出目录”默认递归扫描，点击“开始转换”后自动判断 bag→mkv 或 mkv→bag；输入目录里同时有 bag 和 mkv 会报错，输出目录不允许在输入目录内部；嵌套子目录会按相对路径镜像。CLI `batch` 仍只处理 bag；`mkv2bag` 是单文件。
-
-如果执行策略拦截 `.ps1`，用 `tests\run_sample.cmd`（内部带 `-ExecutionPolicy Bypass`），或：
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\run_sample.ps1
-```
 
 GUI 是 Windows 原生 Win32（Common Controls），不依赖 Qt；`bag2mkv-gui` 是 `WIN32` 子系统，
 没有控制台窗口。GUI 的进度/取消通过 `converter` 的 `ProgressCallback` 实现，取消时
