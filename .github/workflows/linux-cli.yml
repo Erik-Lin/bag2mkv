@@ -10,7 +10,7 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install build tools
         run: |
@@ -25,7 +25,12 @@ jobs:
           rm -rf /tmp/k4a-wrapper
           mkdir -p /tmp/k4a-wrapper
           unzip -q /tmp/k4a-wrapper.zip -d /tmp/k4a-wrapper
-          K4A_ROOT=$(dirname "$(dirname "$(dirname "$(find /tmp/k4a-wrapper -path '*/include/k4a/k4a.h' | head -n1)")")")")
+          K4A_HEADER=$(find /tmp/k4a-wrapper -path '*/include/k4a/k4a.h' -print -quit)
+          if [ -z "$K4A_HEADER" ]; then
+            echo "k4a.h not found in downloaded K4A wrapper" >&2
+            exit 1
+          fi
+          K4A_ROOT=$(cd "$(dirname "$K4A_HEADER")/../.." && pwd)
           echo "K4A_ROOT=$K4A_ROOT" >> "$GITHUB_ENV"
 
       - name: Configure
