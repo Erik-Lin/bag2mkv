@@ -1,4 +1,4 @@
-# bag2mkv v0.4.2
+# bag2mkv v0.4.3
 
 把 Orbbec SDK 录制的 RGB-D `.bag` 无损转换成 Azure Kinect（K4A）兼容的 `.mkv`。
 提供 **命令行版** `bag2mkv.exe` 和 **Windows 原生 GUI** `bag2mkv-gui.exe`，两者共用同一个转换核心。
@@ -29,33 +29,35 @@ ctest --test-dir build -C Release --output-on-failure
 
 ## GUI 使用
 
-双击 `build\Release\bag2mkv-gui.exe`，然后：
+双击 `build\Release\bag2mkv-gui.exe`，只需要三步：
 
-1. 选择或拖拽输入 `.bag`；输出路径会自动建议为同名 `.mkv`。
-2. 选择彩色输出：
-   - `BGRA 1080p`：默认，kinect-analyzer 可播放，约 12.5 GB。
-   - `MJPEG 原码流`：约 1.2 GB，但只支持 MJPG 的播放器才能显示。
-3. 按需勾选“保留原始 MJPEG 轨道”“转换后自动验证”“覆盖已存在的输出文件”。
-4. 可选：选择同设备/同模式的 `calibration.json`；不选则从 bag 的 stream profile 合成。
-5. 点击“开始转换”。界面会显示扫描/写入/验证进度，可随时取消；日志在底部。
-6. 需要批量时点击“批量目录...”，选择输入目录（会递归扫描子目录）和输出目录；每个 `.bag` 生成一个同名 `.mkv`。单个文件失败不会中断其余文件；空间明显不足时会在开始前提示。
-7. 需要反向时点击“MKV 转 bag...”，选择 K4A `.mkv` 和输出 `.bag`；使用同一套 manifest/source-track 规则生成 LZ4 bag。
+1. 选择**输入目录**：目录及子目录中必须只包含 `.bag`，或只包含 `.mkv`；两种格式混在一起会直接报错。
+2. 选择**输出目录**：不会允许输出到输入目录内部，避免下次扫描混入另一种格式。
+3. 点击“开始转换”。
 
-GUI 也支持命令行预填，方便“打开方式”或脚本冒烟测试：
+程序会自动判断方向：
+
+- 输入全是 `.bag` → 批量生成 `.mkv`；
+- 输入全是 `.mkv` → 批量生成 `.bag`；
+- 子目录结构会保留到输出目录；
+- 单个文件失败不会中断其余文件，日志和进度在窗口中显示；
+- 可选勾选“覆盖已存在的输出文件”“转换后自动验证”，以及彩色模式。
+
+GUI 也支持命令行预填，方便脚本或“打开方式”：
 
 ```powershell
-.\build\Release\bag2mkv-gui.exe capture.bag capture.mkv
-.\build\Release\bag2mkv-gui.exe capture.bag capture_mjpg.mkv --mjpg --start
-.\build\Release\bag2mkv-gui.exe --batch .\recordings --batch-output .\mkv --mjpg
+# 目录批量：自动识别 bag→mkv 或 mkv→bag
+.\build\Release\bag2mkv-gui.exe <输入目录> <输出目录> --start
+.\build\Release\bag2mkv-gui.exe --batch <输入目录> --batch-output <输出目录>
+
+# 单个文件仍可用
+.\build\Release\bag2mkv-gui.exe capture.bag capture.mkv --start
 .\build\Release\bag2mkv-gui.exe --to-bag capture.mkv --to-bag-output capture.bag
 ```
 
-- 第一个非选项参数：输入 bag。
-- 第二个非选项参数：输出 mkv（省略则自动建议）。
-- `--mjpg`：预选 MJPEG 原码流。
-- `--start`：启动后自动开始转换。
-- `--batch <dir>` + `--batch-output <dir>`：直接进入批量目录模式。
-- `--to-bag <mkv>` + `--to-bag-output <bag>`：直接进入 MKV → bag 反向模式。
+- `--mjpg`：bag→mkv 时预选 MJPEG 原码流。
+- `--start`：启动后自动开始。
+- `--batch <dir>` + `--batch-output <dir>`：直接进入目录批量，自动判断方向。
 
 ## 命令行使用
 

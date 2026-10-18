@@ -14,7 +14,7 @@
 
 ### 1.1 仓库现状（重要）
 
-当前仓库已有 **v0.4.2 可运行实现**（C++17 + CMake，命令行 + Windows GUI）。除下面这些第三方/样本目录外，源码在 `src/`，构建文件是 `CMakeLists.txt`，测试在 `tests/`，使用说明在 `README.md`，贡献指南在 `CONTRIBUTING.md`，版本变化见 `CHANGELOG.md`，许可证是 `LICENSE`。
+当前仓库已有 **v0.4.3 可运行实现**（C++17 + CMake，命令行 + Windows GUI）。除下面这些第三方/样本目录外，源码在 `src/`，构建文件是 `CMakeLists.txt`，测试在 `tests/`，使用说明在 `README.md`，贡献指南在 `CONTRIBUTING.md`，版本变化见 `CHANGELOG.md`，许可证是 `LICENSE`。
 
 | 路径 | 内容 |
 |---|---|
@@ -27,7 +27,7 @@ Orbbec SDK v2 源码（`OrbbecSDK_v2-main/`）和 Body Tracking SDK（`azurekine
 
 样本文件很大，**不要修改、不要提交、不要复制进构建产物**。它们只用于测试和格式对照。
 
-### 1.2 已实现的 v0.4.2
+### 1.2 已实现的 v0.4.3
 
 ```powershell
 .\build\Release\bag2mkv.exe --help
@@ -40,15 +40,13 @@ Orbbec SDK v2 源码（`OrbbecSDK_v2-main/`）和 Body Tracking SDK（`azurekine
 .\build\Release\bag2mkv.exe mkv2bag <input.mkv> [--output <output.bag>] [--force]
 .\build\Release\bag2mkv.exe --version
 .\build\Release\bag2mkv.exe --self-test
-.\build\Release\bag2mkv-gui.exe [input.bag] [output.mkv] [--mjpg] [--start]
+.\build\Release\bag2mkv-gui.exe [input-dir] [output-dir] [--mjpg] [--start]
 .\build\Release\bag2mkv-gui.exe --batch <input-dir> --batch-output <output-dir> [--mjpg]
 .\build\Release\bag2mkv-gui.exe --to-bag <input.mkv> [--to-bag-output <output.bag>]
 ```
 
-GUI 与 CLI 共用 `bag2mkv_core`：输入/输出浏览、拖拽、彩色模式、源轨道、自动验证、
-覆盖确认、进度、取消、日志、打开输出目录；“MKV 转 bag...” 按钮复用 `mkv_to_bag`，
-可选输出路径、日志和取消。CLI 的 `--help` 必须保持详细（见
-`src/main.cpp` 的 `print_convert_help()`）。
+GUI 与 CLI 共用 `bag2mkv_core`：输入目录/输出目录、自动判断 bag→mkv 或 mkv→bag、递归批量、彩色模式、自动验证、
+覆盖确认、进度、取消、日志、打开输出目录。输入目录必须只含一种格式；子目录会镜像到输出目录。
 
 样本 bag 已跑通：
 
@@ -57,6 +55,7 @@ GUI 与 CLI 共用 `bag2mkv_core`：输入/输出浏览、拖拽、彩色模式�
 - 默认输出 **BGRA 1080p + ORIGINAL_COLOR_MJPG 源轨道**，约 **12.53 GB**。
 - `--color mjpg` 输出约 1.20 GB 的 MJPG-only 文件（K4A 可读；2026-10-18 起 kinect-analyzer 也可播放）。
 - `mkv2bag` 已跑通：`--color mjpg` MKV → bag（约 797 MB，LZ4）→ MKV，并对照原始 bag 验证通过；带 source track 的默认 MKV 反向也通过。
+- GUI 目录批量已跑通：bag 目录 → 输出目录生成同名 mkv；mkv 目录 → 输出目录生成同名 bag；嵌套子目录结构保留。
 - `verify` 逐帧验证 BGRA 像素/深度/时间戳，并校验原始 MJPEG 源轨道：
   - `verify: ORIGINAL_COLOR_MJPG OK (1366 frames)`
   - `verify: OK (1366 color, 1349 depth)`
@@ -503,7 +502,7 @@ k4a_record_close(rec);
 - `src/record/sdk/record.cpp`
 - `src/record/internal/matroska_read.cpp`
 
-### 4.6 `mkv2bag` 反向格式（v0.4.2，已验证）
+### 4.6 `mkv2bag` 反向格式（v0.4.3，已验证）
 
 `mkv2bag` 把 K4A MKV 写回 `#ROSBAG V2.0`，实现位于 `src/bag_writer.*`、`src/mkv2bag.*`、`src/json.*`：
 
@@ -611,16 +610,14 @@ CMake 的 post-build 会把 `azurekinectsdk/bin/*.dll` 复制到 `build/Release/
 .\build\Release\bag2mkv.exe convert .\20251111_143747_001_cam1_CL8R35300SH_gait.bag -o .\out.mkv --force
 .\build\Release\bag2mkv.exe verify .\20251111_143747_001_cam1_CL8R35300SH_gait.bag .\out.mkv
 .\build\Release\bag2mkv.exe batch .\recordings --output-dir .\out\mkv --color mjpg --verify
-.\build\Release\bag2mkv-gui.exe    # GUI；可传 [input.bag] [output.mkv] [--mjpg] [--start]
+.\build\Release\bag2mkv-gui.exe    # GUI；可传 [input-dir] [output-dir] [--mjpg] [--start]
 .\build\Release\bag2mkv-gui.exe --batch <input-dir> --batch-output <output-dir> [--mjpg]
 .\build\Release\bag2mkv-gui.exe --to-bag <input.mkv> [--to-bag-output <output.bag>]
 .\tests\run_sample.cmd         # 默认 BGRA + 源轨，转换 + verify；删除 12.5 GB 输出
 .\tests\run_sample.cmd -Color mjpg   # 小体积 MJPG-only 测试
 ```
 
-GUI 的“批量目录...”与 CLI `batch` 默认递归扫描 `*.bag`，每个输入生成同名 `.mkv`；CLI 可用
-`--no-recursive` 只扫顶层、`--limit N` 先处理一部分；GUI 批量默认继续处理失败后的剩余文件，
-CLI 默认停止，需 `--continue-on-error` 才继续。
+GUI 的“输入目录/输出目录”默认递归扫描，点击“开始转换”后自动判断 bag→mkv 或 mkv→bag；输入目录里同时有 bag 和 mkv 会报错，输出目录不允许在输入目录内部；嵌套子目录会按相对路径镜像。CLI `batch` 仍只处理 bag；`mkv2bag` 是单文件。
 
 如果执行策略拦截 `.ps1`，用 `tests\run_sample.cmd`（内部带 `-ExecutionPolicy Bypass`），或：
 
@@ -743,7 +740,7 @@ GUI 是 Windows 原生 Win32（Common Controls），不依赖 Qt；`bag2mkv-gui`
 6. `K4A_CALIBRATION_FILE` tag 目前是无 target 的全局 tag；playback 按文件名 `calibration.json` 回退成功，但严格 target UID 未设置。
 7. 写线程磁盘队列较慢时 K4A 仍会打印 “Disk write speed is too low”；`k4a_set_debug_message_handler` 过滤不到这条内部日志。BGRA 模式每帧 sleep 10 ms、MJPG 2 ms 限速；慢磁盘/大文件仍可能看到该日志。
 8. 默认输出是 raw 深度 + BGRA 彩色（~12.5 GB/45 s），没有可选的 FFV1 等无损压缩容器；BGRA 体积是旧播放器兼容的代价。
-9. GUI 当前仅 Windows Win32；没有安装包、没有多语言、没有可编辑队列。批量模式默认递归扫描，CLI 可用 `--no-recursive` 关闭；`--start`、`--mjpg`、`--batch`、`--batch-output`、`--to-bag`、`--to-bag-output` 主要用于预填和冒烟测试。
+9. GUI 当前仅 Windows Win32；主界面已简化为“输入目录 + 输出目录 + 开始转换”，自动识别方向并递归镜像子目录。没有安装包、没有多语言、没有可编辑队列；`--start`、`--mjpg`、`--batch`、`--batch-output`、`--to-bag`、`--to-bag-output` 主要用于预填和冒烟测试。
 
 ---
 

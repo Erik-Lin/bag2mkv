@@ -218,7 +218,7 @@ void BagWriter::add_message(uint32_t conn_id, uint64_t time_ns, const std::vecto
         }
     }
     if (!known) {
-        throw std::runtime_error("bag message references unknown connection");
+        throw std::runtime_error("bag message references unknown connection " + std::to_string(conn_id));
     }
     if (!connections_emitted_) {
         append_connection_records();

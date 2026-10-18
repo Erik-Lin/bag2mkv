@@ -200,6 +200,7 @@ struct App {
     void browse_output();
     void browse_calibration();
     void start_conversion();
+    void start_directory_batch(const std::wstring &input_dir, const std::wstring &output_dir);
     void start_batch();
     void start_batch_dirs(const std::wstring &input_dir, const std::wstring &output_dir);
     void start_mkv2bag();
@@ -231,11 +232,11 @@ void App::create_controls() {
                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
     };
 
-    make(L"STATIC", L"输入 bag", SS_LEFT, 0, 0);
+    make(L"STATIC", L"输入目录", SS_LEFT, 0, 0);
     hInput = make(L"EDIT", L"", ES_AUTOHSCROLL, WS_EX_CLIENTEDGE, ID_INPUT);
     hBrowseInput = make(L"BUTTON", L"浏览...", BS_PUSHBUTTON, 0, ID_BROWSE_INPUT);
 
-    make(L"STATIC", L"输出 MKV", SS_LEFT, 0, 0);
+    make(L"STATIC", L"输出目录", SS_LEFT, 0, 0);
     hOutput = make(L"EDIT", L"", ES_AUTOHSCROLL, WS_EX_CLIENTEDGE, ID_OUTPUT);
     hBrowseOutput = make(L"BUTTON", L"浏览...", BS_PUSHBUTTON, 0, ID_BROWSE_OUTPUT);
 
@@ -260,13 +261,12 @@ void App::create_controls() {
 
     hStart = make(L"BUTTON", L"开始转换", BS_DEFPUSHBUTTON, 0, ID_START);
     hCancel = make(L"BUTTON", L"取消", BS_PUSHBUTTON, 0, ID_CANCEL);
-    hBatch = make(L"BUTTON", L"批量目录...", BS_PUSHBUTTON, 0, ID_BATCH);
-    hToBag = make(L"BUTTON", L"MKV 转 bag...", BS_PUSHBUTTON, 0, ID_TO_BAG);
     hOpen = make(L"BUTTON", L"打开输出目录", BS_PUSHBUTTON, 0, ID_OPEN);
 
     hProgress = CreateWindowExW(0, PROGRESS_CLASSW, L"", WS_CHILD | WS_VISIBLE | PBS_SMOOTH, 0, 0, 0, 0, hwnd,
                                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_PROGRESS)), instance, nullptr);
-    hStatus = make(L"STATIC", L"就绪。选择 bag 后点击“开始转换”。", SS_LEFT, 0, ID_STATUS);
+    hStatus = make(L"STATIC", L"选择包含 bag 或 mkv 的输入目录，再选择输出目录，点击“开始转换”。", SS_LEFT, 0,
+                   ID_STATUS);
     hLog = make(L"EDIT", L"", ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL, WS_EX_CLIENTEDGE, ID_LOG);
 
     SendMessageW(hPreserve, BM_SETCHECK, BST_CHECKED, 0);
@@ -346,9 +346,7 @@ void App::layout() {
 
     MoveWindow(hStart, margin, y, S(120), S(32), TRUE);
     MoveWindow(hCancel, margin + S(132), y, S(90), S(32), TRUE);
-    MoveWindow(hBatch, margin + S(234), y, S(120), S(32), TRUE);
-    MoveWindow(hToBag, margin + S(366), y, S(130), S(32), TRUE);
-    MoveWindow(hOpen, margin + S(508), y, S(120), S(32), TRUE);
+    MoveWindow(hOpen, margin + S(234), y, S(120), S(32), TRUE);
     y += S(42);
 
     MoveWindow(hProgress, margin, y, rc.right - 2 * margin, S(18), TRUE);
@@ -376,8 +374,6 @@ void App::set_running(bool value) {
     EnableWindow(hClearCalib, !value);
     EnableWindow(hStart, !value);
     EnableWindow(hCancel, value);
-    EnableWindow(hBatch, !value);
-    EnableWindow(hToBag, !value);
     if (value) {
         EnableWindow(hOpen, FALSE);
     }
@@ -408,40 +404,15 @@ std::wstring App::suggested_output(const std::wstring &input) const {
 }
 
 void App::browse_input() {
-    wchar_t file[MAX_PATH] = {};
-    OPENFILENAMEW ofn{};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = hwnd;
-    ofn.lpstrFilter = L"Orbbec bag (*.bag)\0*.bag\0All files (*.*)\0*.*\0";
-    ofn.lpstrFile = file;
-    ofn.nMaxFile = MAX_PATH;
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
-    ofn.lpstrTitle = L"选择 Orbbec bag 文件";
-    if (!GetOpenFileNameW(&ofn)) return;
-    SetWindowTextW(hInput, file);
-    std::wstring old = get_text(hOutput);
-    if (old.empty() || old == suggested_output(get_text(hInput))) {
-        SetWindowTextW(hOutput, suggested_output(file).c_str());
-    }
+    std::wstring dir = pick_folder(hwnd, L"选择输入目录（只含 bag 或只含 mkv）");
+    if (dir.empty()) return;
+    SetWindowTextW(hInput, dir.c_str());
 }
 
 void App::browse_output() {
-    wchar_t file[MAX_PATH] = {};
-    std::wstring current = get_text(hOutput);
-    if (!current.empty()) {
-        wcsncpy_s(file, current.c_str(), _TRUNCATE);
-    }
-    OPENFILENAMEW ofn{};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = hwnd;
-    ofn.lpstrFilter = L"K4A recording (*.mkv)\0*.mkv\0All files (*.*)\0*.*\0";
-    ofn.lpstrFile = file;
-    ofn.nMaxFile = MAX_PATH;
-    ofn.lpstrDefExt = L"mkv";
-    ofn.Flags = OFN_PATHMUSTEXIST | OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT;
-    ofn.lpstrTitle = L"选择输出 MKV 文件";
-    if (!GetSaveFileNameW(&ofn)) return;
-    SetWindowTextW(hOutput, file);
+    std::wstring dir = pick_folder(hwnd, L"选择输出目录");
+    if (dir.empty()) return;
+    SetWindowTextW(hOutput, dir.c_str());
 }
 
 void App::browse_calibration() {
@@ -469,8 +440,35 @@ void App::start_conversion() {
         MessageBoxW(hwnd, L"输入 bag 文件不存在。", L"bag2mkv", MB_ICONERROR | MB_OK);
         return;
     }
-    if (output.empty()) {
-        output = suggested_output(input);
+    if (std::filesystem::is_directory(std::filesystem::path(input))) {
+        if (output.empty()) {
+            MessageBoxW(hwnd, L"请选择输出目录。", L"bag2mkv", MB_ICONINFORMATION | MB_OK);
+            return;
+        }
+        start_directory_batch(input, output);
+        return;
+    }
+    std::wstring input_ext = std::filesystem::path(input).extension().wstring();
+    std::transform(input_ext.begin(), input_ext.end(), input_ext.begin(),
+                   [](wchar_t c) { return static_cast<wchar_t>(towlower(c)); });
+    if (input_ext == L".mkv") {
+        if (output.empty() || std::filesystem::is_directory(std::filesystem::path(output))) {
+            std::filesystem::path out = output.empty()
+                ? std::filesystem::path(input)
+                : std::filesystem::path(output) / std::filesystem::path(input).filename();
+            out.replace_extension(L".bag");
+            output = out.wstring();
+            SetWindowTextW(hOutput, output.c_str());
+        }
+        start_mkv2bag_paths(input, output);
+        return;
+    }
+    if (output.empty() || std::filesystem::is_directory(std::filesystem::path(output))) {
+        std::filesystem::path out = output.empty()
+            ? std::filesystem::path(input)
+            : std::filesystem::path(output) / std::filesystem::path(input).filename();
+        out.replace_extension(L".mkv");
+        output = out.wstring();
         SetWindowTextW(hOutput, output.c_str());
     }
     if (input == output) {
@@ -558,12 +556,291 @@ void App::start_conversion() {
     });
 }
 
+void App::start_directory_batch(const std::wstring &input_dir, const std::wstring &output_dir) {
+    std::error_code ec;
+    if (!std::filesystem::is_directory(std::filesystem::path(input_dir), ec) || ec) {
+        MessageBoxW(hwnd, L"输入目录不存在。", L"bag2mkv", MB_ICONERROR | MB_OK);
+        return;
+    }
+    if (output_dir.empty()) {
+        MessageBoxW(hwnd, L"请选择输出目录。", L"bag2mkv", MB_ICONINFORMATION | MB_OK);
+        return;
+    }
+
+    std::vector<std::filesystem::path> bags;
+    std::vector<std::filesystem::path> mkvs;
+    uint64_t other_files = 0;
+    std::filesystem::recursive_directory_iterator it(
+        input_dir, std::filesystem::directory_options::skip_permission_denied, ec);
+    const std::filesystem::recursive_directory_iterator end;
+    for (; it != end; it.increment(ec)) {
+        if (ec) {
+            MessageBoxW(hwnd, (L"无法读取输入目录：\n" + input_dir).c_str(), L"bag2mkv", MB_ICONERROR | MB_OK);
+            return;
+        }
+        if (!it->is_regular_file()) continue;
+        std::wstring ext = it->path().extension().wstring();
+        std::transform(ext.begin(), ext.end(), ext.begin(),
+                       [](wchar_t c) { return static_cast<wchar_t>(towlower(c)); });
+        if (ext == L".bag") {
+            bags.push_back(it->path());
+        } else if (ext == L".mkv") {
+            mkvs.push_back(it->path());
+        } else {
+            ++other_files;
+        }
+    }
+    if (ec) {
+        MessageBoxW(hwnd, (L"无法读取输入目录：\n" + input_dir).c_str(), L"bag2mkv", MB_ICONERROR | MB_OK);
+        return;
+    }
+    std::sort(bags.begin(), bags.end());
+    std::sort(mkvs.begin(), mkvs.end());
+
+    if (!bags.empty() && !mkvs.empty()) {
+        MessageBoxW(hwnd,
+                    (L"输入目录同时包含 bag 和 mkv，无法判断转换方向。\n\nbag: " + std::to_wstring(bags.size()) +
+                     L"\nmkv: " + std::to_wstring(mkvs.size()) +
+                     L"\n\n请让第一个目录只包含 bag 或只包含 mkv。").c_str(),
+                    L"bag2mkv", MB_ICONERROR | MB_OK);
+        return;
+    }
+    if (bags.empty() && mkvs.empty()) {
+        MessageBoxW(hwnd, L"输入目录及其子目录中没有 bag 或 mkv 文件。", L"bag2mkv",
+                    MB_ICONINFORMATION | MB_OK);
+        return;
+    }
+
+    const bool input_is_bag = !bags.empty();
+    const auto &files = input_is_bag ? bags : mkvs;
+    const std::wstring target_ext = input_is_bag ? L".mkv" : L".bag";
+
+    std::filesystem::create_directories(output_dir, ec);
+    if (ec) {
+        MessageBoxW(hwnd, (L"无法创建输出目录：\n" + output_dir).c_str(), L"bag2mkv", MB_ICONERROR | MB_OK);
+        return;
+    }
+    const std::filesystem::path input_abs = std::filesystem::weakly_canonical(input_dir, ec);
+    if (ec) {
+        MessageBoxW(hwnd, (L"无法解析输入目录：\n" + input_dir).c_str(), L"bag2mkv", MB_ICONERROR | MB_OK);
+        return;
+    }
+    const std::filesystem::path output_abs = std::filesystem::weakly_canonical(output_dir, ec);
+    if (ec) {
+        MessageBoxW(hwnd, (L"无法解析输出目录：\n" + output_dir).c_str(), L"bag2mkv", MB_ICONERROR | MB_OK);
+        return;
+    }
+    std::wstring input_abs_text = input_abs.wstring();
+    std::wstring output_abs_text = output_abs.wstring();
+    std::transform(input_abs_text.begin(), input_abs_text.end(), input_abs_text.begin(),
+                   [](wchar_t c) { return static_cast<wchar_t>(towlower(c)); });
+    std::transform(output_abs_text.begin(), output_abs_text.end(), output_abs_text.begin(),
+                   [](wchar_t c) { return static_cast<wchar_t>(towlower(c)); });
+    const std::wstring input_prefix = input_abs_text + L"\\";
+    if (output_abs_text == input_abs_text || output_abs_text.rfind(input_prefix, 0) == 0) {
+        MessageBoxW(hwnd, L"输出目录不能是输入目录或其子目录，否则下次运行会混入另一种格式。", L"bag2mkv",
+                    MB_ICONERROR | MB_OK);
+        return;
+    }
+
+    std::vector<std::filesystem::path> outputs;
+    outputs.reserve(files.size());
+    std::set<std::wstring> seen_outputs;
+    for (const auto &file : files) {
+        std::error_code rel_ec;
+        std::filesystem::path rel = std::filesystem::relative(file, input_dir, rel_ec);
+        if (rel_ec || rel.empty()) rel = file.filename();
+        std::filesystem::path out = std::filesystem::path(output_dir) / rel.parent_path() / rel.stem();
+        out.replace_extension(target_ext);
+        std::wstring key = out.wstring();
+        std::transform(key.begin(), key.end(), key.begin(),
+                       [](wchar_t c) { return static_cast<wchar_t>(towlower(c)); });
+        if (!seen_outputs.insert(key).second) {
+            MessageBoxW(hwnd, (L"输出路径冲突：\n" + out.wstring()).c_str(), L"bag2mkv",
+                        MB_ICONERROR | MB_OK);
+            return;
+        }
+        outputs.push_back(out);
+    }
+
+    bool force = SendMessageW(hForce, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    if (!force) {
+        int existing = 0;
+        for (const auto &out : outputs) {
+            std::error_code exists_ec;
+            if (std::filesystem::exists(out, exists_ec) && !exists_ec) ++existing;
+        }
+        if (existing > 0) {
+            int answer = MessageBoxW(hwnd,
+                                     (L"输出目录中已有 " + std::to_wstring(existing) +
+                                      L" 个目标文件，是否全部覆盖？").c_str(),
+                                     L"bag2mkv", MB_ICONQUESTION | MB_YESNO | MB_DEFBUTTON2);
+            if (answer != IDYES) return;
+            force = true;
+        }
+    }
+
+    ConvertOptions base;
+    base.force = force;
+    base.no_calibration = SendMessageW(hNoCalib, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    base.verify_after = SendMessageW(hVerify, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    base.color_output =
+        SendMessageW(hColor, CB_GETCURSEL, 0, 0) == 1 ? ColorOutput::Mjpg : ColorOutput::Bgra;
+    base.preserve_source_color =
+        base.color_output == ColorOutput::Bgra &&
+        SendMessageW(hPreserve, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    if (input_is_bag) {
+        std::wstring calib = get_text(hCalib);
+        if (!calib.empty()) {
+            if (!std::filesystem::exists(std::filesystem::path(calib))) {
+                MessageBoxW(hwnd, L"calibration.json 不存在。", L"bag2mkv", MB_ICONERROR | MB_OK);
+                return;
+            }
+            base.calibration_json_path = narrow(calib);
+        }
+    }
+
+    uint64_t input_bytes = 0;
+    uint64_t existing_bytes = 0;
+    bool sizes_ok = true;
+    for (size_t i = 0; i < files.size(); ++i) {
+        std::error_code size_ec;
+        const uint64_t size = std::filesystem::file_size(files[i], size_ec);
+        if (size_ec) {
+            sizes_ok = false;
+            break;
+        }
+        input_bytes += size;
+        const uint64_t out_size = std::filesystem::file_size(outputs[i], size_ec);
+        if (!size_ec) existing_bytes += out_size;
+    }
+    if (sizes_ok && input_bytes > 0) {
+        const double factor = input_is_bag ? (base.color_output == ColorOutput::Bgra ? 16.0 : 1.7) : 1.2;
+        const uint64_t estimate = uint64_t(double(input_bytes) * factor) + 64ull * 1024ull * 1024ull;
+        std::error_code space_ec;
+        const std::filesystem::space_info space = std::filesystem::space(output_dir, space_ec);
+        if (!space_ec && space.available > 0) {
+            const uint64_t available = space.available + existing_bytes;
+            if (estimate > available) {
+                MessageBoxW(hwnd,
+                            (L"磁盘空间不足，尚未开始转换。\n\n文件数：" + std::to_wstring(files.size()) +
+                             L"\n预计输出：" + human_size(estimate) + L"\n输出盘可用：" + human_size(available) +
+                             L"\n\n可以改用 MJPEG 模式或增加磁盘空间。").c_str(),
+                            L"bag2mkv", MB_ICONERROR | MB_OK);
+                return;
+            }
+        }
+    }
+
+    if (worker.joinable()) worker.join();
+    cancel = false;
+    close_when_done = false;
+    batch_mode = true;
+    batch_total = files.size();
+    batch_index = 0;
+    last_output_dir = output_dir;
+    set_running(true);
+    reset_progress();
+    SetWindowTextW(hLog, L"");
+    set_status(input_is_bag ? L"正在批量转换 bag → mkv..." : L"正在批量转换 mkv → bag...");
+    append_log(L"输入目录: " + input_dir);
+    append_log(L"输出目录: " + output_dir);
+    append_log(std::wstring(L"方向: ") + (input_is_bag ? L"bag → mkv" : L"mkv → bag"));
+    append_log(L"文件数: " + std::to_wstring(files.size()));
+    if (other_files > 0) {
+        append_log(L"已忽略 " + std::to_wstring(other_files) + L" 个其他文件");
+    }
+
+    worker = std::thread([this, input_is_bag, files, outputs, force, base]() {
+        BatchResult result;
+        result.total = files.size();
+        result.output_dir = last_output_dir;
+        for (size_t i = 0; i < files.size(); ++i) {
+            if (cancel.load()) {
+                PostMessageW(hwnd, WM_APP_CANCELLED, 0, 0);
+                return;
+            }
+            batch_index = i + 1;
+            std::wstring prefix = L"[" + std::to_wstring(i + 1) + L"/" + std::to_wstring(files.size()) + L"] ";
+            auto *start_line = new std::wstring(prefix + files[i].wstring() + L" -> " + outputs[i].wstring());
+            if (!PostMessageW(hwnd, WM_APP_LOG, 0, reinterpret_cast<LPARAM>(start_line))) {
+                delete start_line;
+            }
+            try {
+                if (input_is_bag) {
+                    ConvertOptions options = base;
+                    options.input_bag = narrow(files[i].wstring());
+                    options.output_mkv = narrow(outputs[i].wstring());
+                    convert_bag(
+                        options,
+                        [this, prefix](const ProgressInfo &info) -> bool {
+                            if (cancel.load()) return false;
+                            auto *copy = new ProgressInfo(info);
+                            copy->message = narrow(prefix) + copy->message;
+                            if (!PostMessageW(hwnd, WM_APP_PROGRESS, 0, reinterpret_cast<LPARAM>(copy))) {
+                                delete copy;
+                                return false;
+                            }
+                            return true;
+                        },
+                        [this, prefix](const std::string &line) {
+                            auto *copy = new std::wstring(prefix + widen(line));
+                            if (!PostMessageW(hwnd, WM_APP_LOG, 0, reinterpret_cast<LPARAM>(copy))) {
+                                delete copy;
+                            }
+                        });
+                } else {
+                    Mkv2BagOptions options;
+                    options.input_mkv = narrow(files[i].wstring());
+                    options.output_bag = narrow(outputs[i].wstring());
+                    options.force = force;
+                    mkv_to_bag(
+                        options,
+                        [this, prefix](const std::string &line) {
+                            auto *copy = new std::wstring(prefix + widen(line));
+                            if (!PostMessageW(hwnd, WM_APP_LOG, 0, reinterpret_cast<LPARAM>(copy))) {
+                                delete copy;
+                            }
+                        },
+                        [this, prefix, i, total = files.size()](uint64_t current, uint64_t) -> bool {
+                            if (cancel.load()) return false;
+                            if (current % 100 == 0) {
+                                auto *info = new ProgressInfo{Stage::Writing, i + 1, total,
+                                                              narrow(prefix) + "mkv2bag " +
+                                                                  std::to_string(current)};
+                                if (!PostMessageW(hwnd, WM_APP_PROGRESS, 0,
+                                                  reinterpret_cast<LPARAM>(info))) {
+                                    delete info;
+                                    return false;
+                                }
+                            }
+                            return true;
+                        });
+                }
+                ++result.succeeded;
+            } catch (const CancelledError &) {
+                PostMessageW(hwnd, WM_APP_CANCELLED, 0, 0);
+                return;
+            } catch (const std::exception &e) {
+                ++result.failed;
+                auto *error_line = new std::wstring(prefix + L"错误: " + widen(e.what()));
+                if (!PostMessageW(hwnd, WM_APP_LOG, 0, reinterpret_cast<LPARAM>(error_line))) {
+                    delete error_line;
+                }
+            }
+        }
+        auto *copy = new BatchResult(result);
+        if (!PostMessageW(hwnd, WM_APP_BATCH_DONE, 0, reinterpret_cast<LPARAM>(copy))) {
+            delete copy;
+        }
+    });
+}
 void App::start_batch() {
-    std::wstring input_dir = pick_folder(hwnd, L"选择包含 .bag 的输入目录");
+    std::wstring input_dir = pick_folder(hwnd, L"选择输入目录（只含 bag 或只含 mkv）");
     if (input_dir.empty()) return;
-    std::wstring output_dir = pick_folder(hwnd, L"选择输出 MKV 目录");
+    std::wstring output_dir = pick_folder(hwnd, L"选择输出目录");
     if (output_dir.empty()) return;
-    start_batch_dirs(input_dir, output_dir);
+    start_directory_batch(input_dir, output_dir);
 }
 
 void App::start_batch_dirs(const std::wstring &input_dir, const std::wstring &output_dir) {
@@ -1014,10 +1291,15 @@ void App::on_drop(HDROP drop) {
     }
     wchar_t file[MAX_PATH] = {};
     if (DragQueryFileW(drop, 0, file, MAX_PATH) > 0) {
-        SetWindowTextW(hInput, file);
-        std::wstring old = get_text(hOutput);
-        if (old.empty() || old == suggested_output(get_text(hInput))) {
-            SetWindowTextW(hOutput, suggested_output(file).c_str());
+        std::filesystem::path dropped(file);
+        if (std::filesystem::is_directory(dropped)) {
+            SetWindowTextW(hInput, file);
+        } else {
+            SetWindowTextW(hInput, file);
+            std::wstring old = get_text(hOutput);
+            if (old.empty() || old == suggested_output(get_text(hInput))) {
+                SetWindowTextW(hOutput, suggested_output(file).c_str());
+            }
         }
     }
     DragFinish(drop);
@@ -1163,7 +1445,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
         return 1;
     }
 
-    std::wstring window_title = L"bag2mkv v" + widen(version()) + L" - Orbbec bag 转 K4A MKV";
+    std::wstring window_title = L"bag2mkv v" + widen(version()) + L" - Orbbec bag 与 K4A MKV 互转";
     HWND hwnd = CreateWindowExW(0, wc.lpszClassName, window_title.c_str(),
                                 WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT,
                                 app.S(760), app.S(520), nullptr, nullptr, instance, &app);
@@ -1227,7 +1509,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
             }
             app.start_mkv2bag_paths(to_bag_input, to_bag_output);
         } else if (!batch_input.empty() && !batch_output.empty()) {
-            app.start_batch_dirs(batch_input, batch_output);
+            app.start_directory_batch(batch_input, batch_output);
         } else if (autostart && !positional.empty()) {
             PostMessageW(hwnd, WM_COMMAND, MAKEWPARAM(ID_START, BN_CLICKED), 0);
         }

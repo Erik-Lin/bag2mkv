@@ -471,6 +471,13 @@ std::string image_topic_for_conn(uint32_t conn, const std::map<uint32_t, std::st
     }
 }
 
+uint32_t image_connection(const FrameMeta *meta, uint32_t fallback) {
+    if (meta != nullptr && (meta->conn_id == 1 || meta->conn_id == 2 || meta->conn_id == 6)) {
+        return meta->conn_id;
+    }
+    return fallback;
+}
+
 }  // namespace
 
 Mkv2BagSummary mkv_to_bag(const Mkv2BagOptions &options, const Mkv2BagLog &log,
@@ -551,11 +558,12 @@ Mkv2BagSummary mkv_to_bag(const Mkv2BagOptions &options, const Mkv2BagLog &log,
         }
 
         std::set<uint32_t> frame_conns;
-        if (color_frames.empty()) frame_conns.insert(2);
-        if (depth_frames.empty()) frame_conns.insert(1);
-        // Keep an IR connection available even when the manifest is absent; the
-        // K4A playback may expose an IR image while the manifest has no frame row.
-        if (ir_frames.empty()) frame_conns.insert(6);
+        // Always keep the three standard image connections available. Some
+        // third-party recordings have a manifest with a zero/invalid conn id;
+        // the writer then falls back to these standard ids.
+        frame_conns.insert(1);
+        frame_conns.insert(2);
+        frame_conns.insert(6);
         for (const auto &kv : color_frames) frame_conns.insert(kv.second->conn_id);
         for (const auto &kv : depth_frames) frame_conns.insert(kv.second->conn_id);
         for (const auto &kv : ir_frames) frame_conns.insert(kv.second->conn_id);
@@ -611,7 +619,7 @@ Mkv2BagSummary mkv_to_bag(const Mkv2BagOptions &options, const Mkv2BagLog &log,
             if (color) {
                 const uint64_t ts = k4a_image_get_device_timestamp_usec(color);
                 const FrameMeta *meta = find_frame(color_frames, ts);
-                const uint32_t conn = meta && meta->conn_id ? meta->conn_id : 2;
+                const uint32_t conn = image_connection(meta, 2);
                 std::vector<uint8_t> payload;
                 auto jpeg_it = source_jpegs.find(ts);
                 if (jpeg_it != source_jpegs.end()) {
@@ -660,7 +668,7 @@ Mkv2BagSummary mkv_to_bag(const Mkv2BagOptions &options, const Mkv2BagLog &log,
                                     data + static_cast<size_t>(y) * stride, static_cast<size_t>(width) * 2);
                     }
                     const FrameMeta *meta = find_frame(depth_frames, ts);
-                    const uint32_t conn = meta && meta->conn_id ? meta->conn_id : 1;
+                    const uint32_t conn = image_connection(meta, 1);
                     writer.add_message(conn, ts * 1000ULL,
                                        image_payload(meta, ts, width, height, "mono16", width * 2, packed, 16,
                                                      0.0f));
@@ -683,7 +691,7 @@ Mkv2BagSummary mkv_to_bag(const Mkv2BagOptions &options, const Mkv2BagLog &log,
                                     data + static_cast<size_t>(y) * stride, static_cast<size_t>(width) * 2);
                     }
                     const FrameMeta *meta = find_frame(ir_frames, ts);
-                    const uint32_t conn = meta && meta->conn_id ? meta->conn_id : 6;
+                    const uint32_t conn = image_connection(meta, 6);
                     writer.add_message(conn, ts * 1000ULL,
                                        image_payload(meta, ts, width, height, "mono16", width * 2, packed, 16,
                                                      0.0f));
