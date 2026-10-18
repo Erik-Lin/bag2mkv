@@ -1,5 +1,6 @@
 #include "converter.hpp"
 #include "errors.hpp"
+#include "mkv2bag.hpp"
 
 #include <windows.h>
 #include <commctrl.h>
@@ -42,6 +43,7 @@ constexpr int ID_STATUS = 1016;
 constexpr int ID_LOG = 1017;
 constexpr int ID_NO_CALIB = 1018;
 constexpr int ID_BATCH = 1019;
+constexpr int ID_TO_BAG = 1020;
 
 constexpr UINT WM_APP_PROGRESS = WM_APP + 1;
 constexpr UINT WM_APP_LOG = WM_APP + 2;
@@ -49,12 +51,18 @@ constexpr UINT WM_APP_DONE = WM_APP + 3;
 constexpr UINT WM_APP_ERROR = WM_APP + 4;
 constexpr UINT WM_APP_CANCELLED = WM_APP + 5;
 constexpr UINT WM_APP_BATCH_DONE = WM_APP + 6;
+constexpr UINT WM_APP_TO_BAG_DONE = WM_APP + 7;
 
 struct BatchResult {
     uint64_t total = 0;
     uint64_t succeeded = 0;
     uint64_t failed = 0;
     std::wstring output_dir;
+};
+
+struct ToBagResult {
+    Mkv2BagSummary summary;
+    std::wstring output_path;
 };
 
 std::string narrow(const std::wstring &s) {
@@ -111,6 +119,36 @@ std::wstring pick_folder(HWND owner, const wchar_t *title) {
     return result;
 }
 
+std::wstring pick_mkv_file(HWND owner) {
+    wchar_t path[MAX_PATH] = {};
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter = L"K4A MKV (*.mkv)\0*.mkv\0All files (*.*)\0*.*\0";
+    ofn.lpstrFile = path;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
+    if (!GetOpenFileNameW(&ofn)) return {};
+    return path;
+}
+
+std::wstring pick_bag_save(HWND owner, const std::wstring &suggested) {
+    wchar_t path[MAX_PATH] = {};
+    if (!suggested.empty()) {
+        wcsncpy_s(path, suggested.c_str(), _TRUNCATE);
+    }
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter = L"Orbbec ROSBAG (*.bag)\0*.bag\0All files (*.*)\0*.*\0";
+    ofn.lpstrFile = path;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrDefExt = L"bag";
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
+    if (!GetSaveFileNameW(&ofn)) return {};
+    return path;
+}
+
 struct App {
     HINSTANCE instance = nullptr;
     HWND hwnd = nullptr;
@@ -132,6 +170,7 @@ struct App {
     HWND hStart = nullptr;
     HWND hCancel = nullptr;
     HWND hBatch = nullptr;
+    HWND hToBag = nullptr;
     HWND hOpen = nullptr;
     HWND hProgress = nullptr;
     HWND hStatus = nullptr;
@@ -163,11 +202,14 @@ struct App {
     void start_conversion();
     void start_batch();
     void start_batch_dirs(const std::wstring &input_dir, const std::wstring &output_dir);
+    void start_mkv2bag();
+    void start_mkv2bag_paths(const std::wstring &input, const std::wstring &output);
     void request_cancel();
     void open_output_folder();
     void on_progress(const ProgressInfo &info);
     void on_done(const ConvertSummary &summary);
     void on_batch_done(const BatchResult &result);
+    void on_to_bag_done(const ToBagResult &result);
     void on_error(const std::string &error);
     void on_cancelled();
     void on_command(int id, int code);
@@ -219,6 +261,7 @@ void App::create_controls() {
     hStart = make(L"BUTTON", L"开始转换", BS_DEFPUSHBUTTON, 0, ID_START);
     hCancel = make(L"BUTTON", L"取消", BS_PUSHBUTTON, 0, ID_CANCEL);
     hBatch = make(L"BUTTON", L"批量目录...", BS_PUSHBUTTON, 0, ID_BATCH);
+    hToBag = make(L"BUTTON", L"MKV 转 bag...", BS_PUSHBUTTON, 0, ID_TO_BAG);
     hOpen = make(L"BUTTON", L"打开输出目录", BS_PUSHBUTTON, 0, ID_OPEN);
 
     hProgress = CreateWindowExW(0, PROGRESS_CLASSW, L"", WS_CHILD | WS_VISIBLE | PBS_SMOOTH, 0, 0, 0, 0, hwnd,
@@ -304,7 +347,8 @@ void App::layout() {
     MoveWindow(hStart, margin, y, S(120), S(32), TRUE);
     MoveWindow(hCancel, margin + S(132), y, S(90), S(32), TRUE);
     MoveWindow(hBatch, margin + S(234), y, S(120), S(32), TRUE);
-    MoveWindow(hOpen, margin + S(366), y, S(120), S(32), TRUE);
+    MoveWindow(hToBag, margin + S(366), y, S(130), S(32), TRUE);
+    MoveWindow(hOpen, margin + S(508), y, S(120), S(32), TRUE);
     y += S(42);
 
     MoveWindow(hProgress, margin, y, rc.right - 2 * margin, S(18), TRUE);
@@ -333,6 +377,7 @@ void App::set_running(bool value) {
     EnableWindow(hStart, !value);
     EnableWindow(hCancel, value);
     EnableWindow(hBatch, !value);
+    EnableWindow(hToBag, !value);
     if (value) {
         EnableWindow(hOpen, FALSE);
     }
@@ -705,6 +750,72 @@ void App::start_batch_dirs(const std::wstring &input_dir, const std::wstring &ou
     });
 }
 
+void App::start_mkv2bag() {
+    std::wstring input = pick_mkv_file(hwnd);
+    if (input.empty()) return;
+
+    std::filesystem::path suggested(input);
+    suggested.replace_extension(".bag");
+    std::wstring output = pick_bag_save(hwnd, suggested.wstring());
+    if (output.empty()) return;
+    start_mkv2bag_paths(input, output);
+}
+
+void App::start_mkv2bag_paths(const std::wstring &input, const std::wstring &output) {
+    if (input.empty() || output.empty()) return;
+    if (worker.joinable()) worker.join();
+    cancel = false;
+    close_when_done = false;
+    batch_mode = false;
+    batch_index = 0;
+    batch_total = 0;
+    last_output_dir = std::filesystem::path(output).parent_path().wstring();
+    if (last_output_dir.empty()) last_output_dir = L".";
+    set_running(true);
+    reset_progress();
+    SetWindowTextW(hLog, L"");
+    set_status(L"MKV 转 bag...");
+    append_log(L"MKV 转 bag: " + input + L" -> " + output);
+
+    worker = std::thread([this, input, output]() {
+        Mkv2BagOptions options;
+        options.input_mkv = narrow(input);
+        options.output_bag = narrow(output);
+        options.force = true;  // GetSaveFileName already confirmed overwrite
+        try {
+            Mkv2BagSummary summary = mkv_to_bag(
+                options,
+                [this](const std::string &line) {
+                    auto *copy = new std::wstring(widen(line));
+                    if (!PostMessageW(hwnd, WM_APP_LOG, 0, reinterpret_cast<LPARAM>(copy))) {
+                        delete copy;
+                    }
+                },
+                [this](uint64_t current, uint64_t) -> bool {
+                    if (cancel.load()) return false;
+                    if (current % 100 == 0) {
+                        auto *copy = new std::wstring(L"已处理 " + std::to_wstring(current) + L" 帧");
+                        if (!PostMessageW(hwnd, WM_APP_LOG, 0, reinterpret_cast<LPARAM>(copy))) {
+                            delete copy;
+                        }
+                    }
+                    return true;
+                });
+            auto *result = new ToBagResult{summary, output};
+            if (!PostMessageW(hwnd, WM_APP_TO_BAG_DONE, 0, reinterpret_cast<LPARAM>(result))) {
+                delete result;
+            }
+        } catch (const CancelledError &) {
+            PostMessageW(hwnd, WM_APP_CANCELLED, 0, 0);
+        } catch (const std::exception &e) {
+            auto *error = new std::wstring(widen(e.what()));
+            if (!PostMessageW(hwnd, WM_APP_ERROR, 0, reinterpret_cast<LPARAM>(error))) {
+                delete error;
+            }
+        }
+    });
+}
+
 void App::request_cancel() {
     if (!running) return;
     cancel = true;
@@ -803,6 +914,33 @@ void App::on_batch_done(const BatchResult &result) {
     }
 }
 
+void App::on_to_bag_done(const ToBagResult &result) {
+    if (worker.joinable()) worker.join();
+    batch_mode = false;
+    last_output_dir = std::filesystem::path(result.output_path).parent_path().wstring();
+    if (last_output_dir.empty()) last_output_dir = L".";
+    set_running(false);
+    cancel = false;
+    SendMessageW(hProgress, PBM_SETPOS, 1000, 0);
+    const auto &summary = result.summary;
+    set_status(L"MKV 转 bag 完成");
+    append_log(L"MKV 转 bag 完成: " + result.output_path);
+    append_log(L"帧: " + std::to_wstring(summary.color_frames) + L" color, " +
+               std::to_wstring(summary.depth_frames) + L" depth, " + std::to_wstring(summary.ir_frames) +
+               L" IR");
+    append_log(L"属性: " + std::to_wstring(summary.properties) + L"，profile: " +
+               std::to_wstring(summary.profiles) + L"，大小: " + human_size(summary.bag_size));
+    EnableWindow(hOpen, TRUE);
+    std::wstring message = L"MKV 转 bag 完成。\n\n输出：\n" + result.output_path + L"\n\n大小：" +
+                           human_size(summary.bag_size) + L"\n帧：" + std::to_wstring(summary.color_frames) +
+                           L" color / " + std::to_wstring(summary.depth_frames) + L" depth / " +
+                           std::to_wstring(summary.ir_frames) + L" IR";
+    MessageBoxW(hwnd, message.c_str(), L"bag2mkv", MB_ICONINFORMATION | MB_OK);
+    if (close_when_done) {
+        DestroyWindow(hwnd);
+    }
+}
+
 void App::on_error(const std::string &error) {
     if (worker.joinable()) worker.join();
     batch_mode = false;
@@ -851,6 +989,9 @@ void App::on_command(int id, int code) {
             break;
         case ID_BATCH:
             if (code == BN_CLICKED) start_batch();
+            break;
+        case ID_TO_BAG:
+            if (code == BN_CLICKED) start_mkv2bag();
             break;
         case ID_OPEN:
             if (code == BN_CLICKED) open_output_folder();
@@ -939,6 +1080,11 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         case WM_APP_BATCH_DONE: {
             std::unique_ptr<BatchResult> result(reinterpret_cast<BatchResult *>(lparam));
             if (app && result) app->on_batch_done(*result);
+            return 0;
+        }
+        case WM_APP_TO_BAG_DONE: {
+            std::unique_ptr<ToBagResult> result(reinterpret_cast<ToBagResult *>(lparam));
+            if (app && result) app->on_to_bag_done(*result);
             return 0;
         }
         case WM_APP_CANCELLED:
@@ -1031,6 +1177,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
     // Optional launch arguments:
     //   [input.bag] [output.mkv] [--mjpg] [--start]
     //   --batch <input-dir> --batch-output <output-dir>
+    //   --to-bag <input.mkv> [--to-bag-output <output.bag>]
     // These also make "Open with" and scripted smoke tests possible.
     int argc = 0;
     LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
@@ -1038,6 +1185,8 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
         std::vector<std::wstring> positional;
         std::wstring batch_input;
         std::wstring batch_output;
+        std::wstring to_bag_input;
+        std::wstring to_bag_output;
         bool mjpg = false;
         bool autostart = false;
         for (int i = 1; i < argc; ++i) {
@@ -1050,6 +1199,10 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
                 batch_input = argv[++i];
             } else if (arg == L"--batch-output" && i + 1 < argc) {
                 batch_output = argv[++i];
+            } else if (arg == L"--to-bag" && i + 1 < argc) {
+                to_bag_input = argv[++i];
+            } else if (arg == L"--to-bag-output" && i + 1 < argc) {
+                to_bag_output = argv[++i];
             } else if (arg.rfind(L"--", 0) == 0) {
                 // ignore unknown GUI switches
             } else {
@@ -1066,7 +1219,14 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
             SendMessageW(hwnd, WM_COMMAND, MAKEWPARAM(ID_COLOR, CBN_SELCHANGE), 0);
         }
         LocalFree(argv);
-        if (!batch_input.empty() && !batch_output.empty()) {
+        if (!to_bag_input.empty()) {
+            if (to_bag_output.empty()) {
+                std::filesystem::path output(to_bag_input);
+                output.replace_extension(".bag");
+                to_bag_output = output.wstring();
+            }
+            app.start_mkv2bag_paths(to_bag_input, to_bag_output);
+        } else if (!batch_input.empty() && !batch_output.empty()) {
             app.start_batch_dirs(batch_input, batch_output);
         } else if (autostart && !positional.empty()) {
             PostMessageW(hwnd, WM_COMMAND, MAKEWPARAM(ID_START, BN_CLICKED), 0);

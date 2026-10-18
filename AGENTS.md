@@ -14,7 +14,7 @@
 
 ### 1.1 仓库现状（重要）
 
-当前仓库已有 **v0.4.0 可运行实现**（C++17 + CMake，命令行 + Windows GUI）。除下面这些第三方/样本目录外，源码在 `src/`，构建文件是 `CMakeLists.txt`，测试在 `tests/`，使用说明在 `README.md`，贡献指南在 `CONTRIBUTING.md`，版本变化见 `CHANGELOG.md`，许可证是 `LICENSE`。
+当前仓库已有 **v0.4.1 可运行实现**（C++17 + CMake，命令行 + Windows GUI）。除下面这些第三方/样本目录外，源码在 `src/`，构建文件是 `CMakeLists.txt`，测试在 `tests/`，使用说明在 `README.md`，贡献指南在 `CONTRIBUTING.md`，版本变化见 `CHANGELOG.md`，许可证是 `LICENSE`。
 
 | 路径 | 内容 |
 |---|---|
@@ -27,7 +27,7 @@ Orbbec SDK v2 源码（`OrbbecSDK_v2-main/`）和 Body Tracking SDK（`azurekine
 
 样本文件很大，**不要修改、不要提交、不要复制进构建产物**。它们只用于测试和格式对照。
 
-### 1.2 已实现的 v0.4
+### 1.2 已实现的 v0.4.1
 
 ```powershell
 .\build\Release\bag2mkv.exe --help
@@ -42,10 +42,12 @@ Orbbec SDK v2 源码（`OrbbecSDK_v2-main/`）和 Body Tracking SDK（`azurekine
 .\build\Release\bag2mkv.exe --self-test
 .\build\Release\bag2mkv-gui.exe [input.bag] [output.mkv] [--mjpg] [--start]
 .\build\Release\bag2mkv-gui.exe --batch <input-dir> --batch-output <output-dir> [--mjpg]
+.\build\Release\bag2mkv-gui.exe --to-bag <input.mkv> [--to-bag-output <output.bag>]
 ```
 
 GUI 与 CLI 共用 `bag2mkv_core`：输入/输出浏览、拖拽、彩色模式、源轨道、自动验证、
-覆盖确认、进度、取消、日志、打开输出目录。CLI 的 `--help` 必须保持详细（见
+覆盖确认、进度、取消、日志、打开输出目录；“MKV 转 bag...” 按钮复用 `mkv_to_bag`，
+可选输出路径、日志和取消。CLI 的 `--help` 必须保持详细（见
 `src/main.cpp` 的 `print_convert_help()`）。
 
 样本 bag 已跑通：
@@ -501,7 +503,7 @@ k4a_record_close(rec);
 - `src/record/sdk/record.cpp`
 - `src/record/internal/matroska_read.cpp`
 
-### 4.6 `mkv2bag` 反向格式（v0.4，已验证）
+### 4.6 `mkv2bag` 反向格式（v0.4.1，已验证）
 
 `mkv2bag` 把 K4A MKV 写回 `#ROSBAG V2.0`，实现位于 `src/bag_writer.*`、`src/mkv2bag.*`、`src/json.*`：
 
@@ -609,6 +611,7 @@ CMake 的 post-build 会把 `azurekinectsdk/bin/*.dll` 复制到 `build/Release/
 .\build\Release\bag2mkv.exe batch .\recordings --output-dir .\out\mkv --color mjpg --verify
 .\build\Release\bag2mkv-gui.exe    # GUI；可传 [input.bag] [output.mkv] [--mjpg] [--start]
 .\build\Release\bag2mkv-gui.exe --batch <input-dir> --batch-output <output-dir> [--mjpg]
+.\build\Release\bag2mkv-gui.exe --to-bag <input.mkv> [--to-bag-output <output.bag>]
 .\tests\run_sample.cmd         # 默认 BGRA + 源轨，转换 + verify；删除 12.5 GB 输出
 .\tests\run_sample.cmd -Color mjpg   # 小体积 MJPG-only 测试
 ```
@@ -737,7 +740,7 @@ GUI 是 Windows 原生 Win32（Common Controls），不依赖 Qt；`bag2mkv-gui`
 6. `K4A_CALIBRATION_FILE` tag 目前是无 target 的全局 tag；playback 按文件名 `calibration.json` 回退成功，但严格 target UID 未设置。
 7. 写线程磁盘队列较慢时 K4A 仍会打印 “Disk write speed is too low”；`k4a_set_debug_message_handler` 过滤不到这条内部日志。BGRA 模式每帧 sleep 10 ms、MJPG 2 ms 限速；慢磁盘/大文件仍可能看到该日志。
 8. 默认输出是 raw 深度 + BGRA 彩色（~12.5 GB/45 s），没有可选的 FFV1 等无损压缩容器；BGRA 体积是旧播放器兼容的代价。
-9. GUI 当前仅 Windows Win32；没有安装包、没有多语言、没有可编辑队列。批量模式默认递归扫描，CLI 可用 `--no-recursive` 关闭；`--start`、`--mjpg`、`--batch`、`--batch-output` 主要用于预填和冒烟测试。
+9. GUI 当前仅 Windows Win32；没有安装包、没有多语言、没有可编辑队列。批量模式默认递归扫描，CLI 可用 `--no-recursive` 关闭；`--start`、`--mjpg`、`--batch`、`--batch-output`、`--to-bag`、`--to-bag-output` 主要用于预填和冒烟测试。
 
 ---
 

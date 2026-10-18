@@ -2,6 +2,7 @@
 
 #include "bag.hpp"
 #include "bag_writer.hpp"
+#include "errors.hpp"
 #include "json.hpp"
 #include "util.hpp"
 
@@ -472,7 +473,8 @@ std::string image_topic_for_conn(uint32_t conn, const std::map<uint32_t, std::st
 
 }  // namespace
 
-Mkv2BagSummary mkv_to_bag(const Mkv2BagOptions &options, const Mkv2BagLog &log) {
+Mkv2BagSummary mkv_to_bag(const Mkv2BagOptions &options, const Mkv2BagLog &log,
+                          const Mkv2BagProgress &progress) {
     if (options.input_mkv.empty()) throw std::runtime_error("mkv2bag: input path is empty");
     if (options.output_bag.empty()) throw std::runtime_error("mkv2bag: output path is empty");
 
@@ -601,6 +603,9 @@ Mkv2BagSummary mkv_to_bag(const Mkv2BagOptions &options, const Mkv2BagLog &log) 
         while (k4a_playback_get_next_capture(playback, &capture) == K4A_STREAM_RESULT_SUCCEEDED) {
             if (!capture) break;
             ++capture_count;
+            if (progress && !progress(capture_count, 0)) {
+                throw CancelledError();
+            }
 
             k4a_image_t color = k4a_capture_get_color_image(capture);
             if (color) {

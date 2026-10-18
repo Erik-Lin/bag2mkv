@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1
+
+- GUI 增加“MKV 转 bag...”按钮：选择 K4A MKV 和输出 `.bag`，复用 `mkv_to_bag`，支持日志、取消和输出目录。
+- GUI 新增启动参数 `--to-bag <input.mkv>` / `--to-bag-output <output.bag>`，便于快速测试和“打开方式”。
+- `mkv_to_bag` 增加进度/取消回调；取消时删除 `.tmp`，不会留下半成品。
+- 已用 GUI 路径完成一次样本反向转换，输出 797,152,740 B，`inspect` 和 `verify` 均通过。
+
 ## 0.4.0
 
 - 新增 `mkv2bag`：把 K4A MKV 转回 Orbbec ROSBAG V2.0。
