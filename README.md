@@ -130,3 +130,21 @@ kinect-analyzer 的 `ImageProcessor::convertK4AColorToQImage()` / `SyncPlaybackM
 - 不做深度滤波、对齐、缩放或单位换算。
 - 验证：BGRA 模式下逐像素比对 bag JPEG 解码结果；MJPG 模式下逐帧 SHA-256 比对；同时校验 `ORIGINAL_COLOR_MJPG` 的原始 JPEG 哈希。
 - 输出先写 `.tmp`，成功后再 rename；取消或失败会删除临时文件。
+
+## 贡献
+
+欢迎社区一起完善 `bag2mkv`！无论是 bug 报告、播放器兼容性反馈、文档改进，还是 IR/IMU、标定、测试和性能优化，都非常欢迎。
+
+- 提交 Issue / Pull Request 前请先读 [CONTRIBUTING.md](CONTRIBUTING.md)。
+- 改格式相关代码前请读 [AGENTS.md](AGENTS.md) 的无损契约（第 2–4 节）。
+- 请勿在 Issue/PR 中上传未脱敏的受试者数据或几百 MB 的 bag；提供最小复现信息和日志即可。
+- 本项目使用 MIT License，欢迎 fork、使用和贡献。
+
+特别欢迎的方向：IR/IMU 支持、更多 Orbbec 设备和固件实测、标定畸变/D2C 外参逐点验证、不同 K4A 播放器兼容性测试、CI 和文档翻译。
+
+## 许可证
+
+本项目使用 **MIT License**，版权归 **林山力** 所有。完整文本见 [LICENSE](LICENSE)。
+
+`third_party/lz4/` 使用其自身的 BSD 2-Clause License，见 [third_party/lz4/LICENSE](third_party/lz4/LICENSE)。
+`azurekinectsdk/` 是 Orbbec 提供的预编译运行时，遵循其自带许可/条款。
