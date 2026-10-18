@@ -1,4 +1,4 @@
-# bag2mkv v0.3.0
+# bag2mkv v0.3.1
 
 把 Orbbec SDK 录制的 RGB-D `.bag` 无损转换成 Azure Kinect（K4A）兼容的 `.mkv`。
 提供 **命令行版** `bag2mkv.exe` 和 **Windows 原生 GUI** `bag2mkv-gui.exe`，两者共用同一个转换核心。
@@ -38,7 +38,7 @@ ctest --test-dir build -C Release --output-on-failure
 3. 按需勾选“保留原始 MJPEG 轨道”“转换后自动验证”“覆盖已存在的输出文件”。
 4. 可选：选择同设备/同模式的 `calibration.json`；不选则从 bag 的 stream profile 合成。
 5. 点击“开始转换”。界面会显示扫描/写入/验证进度，可随时取消；日志在底部。
-6. 需要批量时点击“批量目录...”，选择输入目录和输出目录；目录下每个 `.bag` 生成一个同名 `.mkv`。单个文件失败不会中断其余文件。
+6. 需要批量时点击“批量目录...”，选择输入目录（会递归扫描子目录）和输出目录；每个 `.bag` 生成一个同名 `.mkv`。单个文件失败不会中断其余文件；空间明显不足时会在开始前提示。
 
 GUI 也支持命令行预填，方便“打开方式”或脚本冒烟测试：
 
@@ -66,7 +66,7 @@ GUI 也支持命令行预填，方便“打开方式”或脚本冒烟测试：
 .\build\Release\bag2mkv.exe --version
 ```
 
-`convert --help` 包含全部选项、彩色模式、文件大小、标定说明、示例和退出码；`batch --help` 包含批量目录、错误继续和输出命名规则。
+`convert --help` 包含全部选项、彩色模式、文件大小、标定说明、示例和退出码；`batch --help` 包含递归扫描、`--limit`、错误继续和输出命名规则。
 
 ### 常用命令
 
@@ -87,8 +87,11 @@ GUI 也支持命令行预填，方便“打开方式”或脚本冒烟测试：
 # 单独验证
 .\build\Release\bag2mkv.exe verify .\...bag .\out.mkv
 
-# 批量转换一个目录（每个 bag 一个同名 mkv）
+# 批量转换一个目录（默认递归扫描子目录，每个 bag 一个同名 mkv）
 .\build\Release\bag2mkv.exe batch .\recordings --output-dir .\mkv --verify
+
+# 只处理前 20 个（排序后），用于先试跑或分批处理
+.\build\Release\bag2mkv.exe batch .\recordings --output-dir .\mkv --color mjpg --limit 20
 
 # 批量时出错继续
 .\build\Release\bag2mkv.exe batch .\recordings --output-dir .\mkv --color mjpg --continue-on-error
@@ -102,6 +105,10 @@ GUI 也支持命令行预填，方便“打开方式”或脚本冒烟测试：
 - `--no-calibration`：不写 `calibration.json`。
 - `--calibration-json <file>`：使用同设备/同模式的参考 K4A 标定。
 - `--verify`：转换后立即逐帧验证。
+- `--no-recursive`：批量时只扫描目录顶层；默认递归子目录。
+- `--limit <n>`：批量只处理排序后的前 n 个输入。
+
+批量输出统一放在 `--output-dir` 下，按输入文件 stem 命名；不同子目录中存在同名 bag 会报“duplicate output name”，不会静默覆盖。批量开始前还会用输入 bag 大小做一次总量预检，空间明显不足时直接停止，避免扫描/转换到一半才失败。
 
 退出码：`0` 成功，`1` 转换/验证失败，`2` 用法错误，`3` 用户取消。
 

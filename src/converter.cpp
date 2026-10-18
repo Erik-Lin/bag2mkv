@@ -227,7 +227,7 @@ std::string version() {
 #ifdef BAG2MKV_VERSION
     return BAG2MKV_VERSION;
 #else
-    return "0.3.0";
+    return "0.3.1";
 #endif
 }
 

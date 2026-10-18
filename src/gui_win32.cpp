@@ -13,6 +13,7 @@
 #include <cwctype>
 #include <filesystem>
 #include <memory>
+#include <set>
 #include <string>
 #include <thread>
 #include <utility>
@@ -523,11 +524,18 @@ void App::start_batch() {
 void App::start_batch_dirs(const std::wstring &input_dir, const std::wstring &output_dir) {
     std::error_code ec;
     std::vector<std::filesystem::path> bags;
-    for (const auto &entry : std::filesystem::directory_iterator(input_dir, ec)) {
-        if (!entry.is_regular_file()) continue;
-        std::wstring ext = entry.path().extension().wstring();
+    std::filesystem::recursive_directory_iterator it(
+        input_dir, std::filesystem::directory_options::skip_permission_denied, ec);
+    const std::filesystem::recursive_directory_iterator end;
+    for (; it != end; it.increment(ec)) {
+        if (ec) {
+            MessageBoxW(hwnd, (L"无法读取输入目录：\n" + input_dir).c_str(), L"bag2mkv", MB_ICONERROR | MB_OK);
+            return;
+        }
+        if (!it->is_regular_file()) continue;
+        std::wstring ext = it->path().extension().wstring();
         std::transform(ext.begin(), ext.end(), ext.begin(), [](wchar_t c) { return static_cast<wchar_t>(towlower(c)); });
-        if (ext == L".bag") bags.push_back(entry.path());
+        if (ext == L".bag") bags.push_back(it->path());
     }
     if (ec) {
         MessageBoxW(hwnd, (L"无法读取输入目录：\n" + input_dir).c_str(), L"bag2mkv", MB_ICONERROR | MB_OK);
@@ -535,8 +543,23 @@ void App::start_batch_dirs(const std::wstring &input_dir, const std::wstring &ou
     }
     std::sort(bags.begin(), bags.end());
     if (bags.empty()) {
-        MessageBoxW(hwnd, L"该目录下没有 .bag 文件。", L"bag2mkv", MB_ICONINFORMATION | MB_OK);
+        MessageBoxW(hwnd, L"该目录及其子目录下没有 .bag 文件。", L"bag2mkv", MB_ICONINFORMATION | MB_OK);
         return;
+    }
+    {
+        std::set<std::wstring> stems;
+        for (const auto &bag : bags) {
+            std::wstring stem = bag.stem().wstring();
+            std::transform(stem.begin(), stem.end(), stem.begin(),
+                           [](wchar_t c) { return static_cast<wchar_t>(towlower(c)); });
+            if (!stems.insert(stem).second) {
+                MessageBoxW(hwnd,
+                            (L"输入目录中存在同名 bag，输出会冲突：\n" + bag.wstring() +
+                             L"\n\n请先拆分目录，或改用 CLI 并自行处理命名。").c_str(),
+                            L"bag2mkv", MB_ICONERROR | MB_OK);
+                return;
+            }
+        }
     }
     std::filesystem::create_directories(output_dir, ec);
     if (ec) {
@@ -575,6 +598,39 @@ void App::start_batch_dirs(const std::wstring &input_dir, const std::wstring &ou
             return;
         }
         base.calibration_json_path = narrow(calib);
+    }
+
+    uint64_t input_bytes = 0;
+    uint64_t existing_bytes = 0;
+    bool input_sizes_ok = true;
+    for (const auto &bag : bags) {
+        std::error_code size_ec;
+        uint64_t size = std::filesystem::file_size(bag, size_ec);
+        if (size_ec) {
+            input_sizes_ok = false;
+            break;
+        }
+        input_bytes += size;
+        std::filesystem::path out = std::filesystem::path(output_dir) / (bag.stem().wstring() + L".mkv");
+        size = std::filesystem::file_size(out, size_ec);
+        if (!size_ec) existing_bytes += size;
+    }
+    if (input_sizes_ok && input_bytes > 0) {
+        const double factor = base.color_output == ColorOutput::Bgra ? 16.0 : 1.7;
+        const uint64_t estimate = uint64_t(double(input_bytes) * factor) + 64ull * 1024ull * 1024ull;
+        std::error_code space_ec;
+        std::filesystem::space_info space = std::filesystem::space(output_dir, space_ec);
+        if (!space_ec && space.available > 0) {
+            const uint64_t available = space.available + existing_bytes;
+            if (estimate > available) {
+                std::wstring message = L"批量空间不足，未开始转换。\n\n文件数：" + std::to_wstring(bags.size()) +
+                                       L"\n预计输出：" + human_size(estimate) +
+                                       L"\n输出盘可用：" + human_size(available) +
+                                       L"\n\n可以改用 MJPEG 模式、增加磁盘空间，或先处理一部分文件。";
+                MessageBoxW(hwnd, message.c_str(), L"bag2mkv", MB_ICONERROR | MB_OK);
+                return;
+            }
+        }
     }
 
     if (worker.joinable()) worker.join();

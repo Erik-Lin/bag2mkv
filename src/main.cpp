@@ -122,8 +122,8 @@ void print_batch_help() {
               << "USAGE\n"
               << "  bag2mkv batch <file-or-directory...> --output-dir <dir> [options]\n"
               << "\n"
-              << "Each input .bag produces <output-dir>/<input-stem>.mkv. A directory input is scanned\n"
-              << "non-recursively for *.bag. Duplicate output names are an error.\n"
+              << "Each input .bag produces <output-dir>/<input-stem>.mkv. Directory inputs are\n"
+              << "scanned recursively by default; duplicate output names are an error.\n"
               << "\n"
               << "OPTIONS\n"
               << "  --output-dir, -o <dir>   Required. Created if it does not exist.\n"
@@ -134,6 +134,8 @@ void print_batch_help() {
               << "  --calibration-json <f>   Use one calibration for all inputs (same device/mode only).\n"
               << "  --verify                 Verify each MKV after conversion.\n"
               << "  --continue-on-error      Keep converting remaining files after a failure.\n"
+              << "  --no-recursive           Only scan the top level of directory inputs.\n"
+              << "  --limit <n>              Convert at most n inputs (after sorting), useful for testing.\n"
               << "  -h, --help               Show this help and exit.\n"
               << "\n"
               << "EXAMPLES\n"
@@ -238,6 +240,18 @@ struct CliProgress {
     unsigned last_pct = 101;
 };
 
+std::string format_size(uint64_t bytes) {
+    char buf[64];
+    if (bytes >= 1024ull * 1024ull * 1024ull) {
+        std::snprintf(buf, sizeof(buf), "%.2f GB", double(bytes) / (1024.0 * 1024.0 * 1024.0));
+    } else if (bytes >= 1024ull * 1024ull) {
+        std::snprintf(buf, sizeof(buf), "%.1f MB", double(bytes) / (1024.0 * 1024.0));
+    } else {
+        std::snprintf(buf, sizeof(buf), "%llu B", static_cast<unsigned long long>(bytes));
+    }
+    return buf;
+}
+
 int cmd_batch(int argc, char **argv) {
     for (int i = 2; i < argc; ++i) {
         if (std::string(argv[i]) == "--help" || std::string(argv[i]) == "-h") {
@@ -249,6 +263,8 @@ int cmd_batch(int argc, char **argv) {
     std::string output_dir;
     std::vector<std::string> inputs;
     bool continue_on_error = false;
+    bool recursive = true;
+    size_t limit = 0;
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--output-dir" || arg == "-o") {
@@ -267,6 +283,25 @@ int cmd_batch(int argc, char **argv) {
             base.verify_after = true;
         } else if (arg == "--continue-on-error") {
             continue_on_error = true;
+        } else if (arg == "--recursive") {
+            recursive = true;
+        } else if (arg == "--no-recursive") {
+            recursive = false;
+        } else if (arg == "--limit") {
+            if (i + 1 >= argc) {
+                std::cerr << "error: missing value for --limit\n";
+                return 2;
+            }
+            try {
+                limit = static_cast<size_t>(std::stoull(argv[++i]));
+            } catch (const std::exception &) {
+                std::cerr << "error: --limit requires a positive integer\n";
+                return 2;
+            }
+            if (limit == 0) {
+                std::cerr << "error: --limit must be greater than zero\n";
+                return 2;
+            }
         } else if (arg == "--color") {
             if (i + 1 >= argc) {
                 std::cerr << "error: missing value for --color\n";
@@ -310,12 +345,27 @@ int cmd_batch(int argc, char **argv) {
     for (const auto &input : inputs) {
         std::error_code ec;
         if (fs::is_directory(input, ec)) {
-            for (const auto &entry : fs::directory_iterator(input, ec)) {
-                if (!entry.is_regular_file()) continue;
-                std::string ext = entry.path().extension().string();
-                std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return char(std::tolower(c)); });
-                if (ext == ".bag") {
-                    expanded.push_back(entry.path().string());
+            if (recursive) {
+                fs::recursive_directory_iterator it(input, fs::directory_options::skip_permission_denied, ec);
+                const fs::recursive_directory_iterator end;
+                for (; it != end; it.increment(ec)) {
+                    if (ec) {
+                        std::cerr << "error: cannot scan directory " << input << ": " << ec.message() << "\n";
+                        return 1;
+                    }
+                    if (!it->is_regular_file()) continue;
+                    std::string ext = it->path().extension().string();
+                    std::transform(ext.begin(), ext.end(), ext.begin(),
+                                   [](unsigned char c) { return char(std::tolower(c)); });
+                    if (ext == ".bag") expanded.push_back(it->path().string());
+                }
+            } else {
+                for (const auto &entry : fs::directory_iterator(input, ec)) {
+                    if (!entry.is_regular_file()) continue;
+                    std::string ext = entry.path().extension().string();
+                    std::transform(ext.begin(), ext.end(), ext.begin(),
+                                   [](unsigned char c) { return char(std::tolower(c)); });
+                    if (ext == ".bag") expanded.push_back(entry.path().string());
                 }
             }
             if (ec) {
@@ -330,12 +380,63 @@ int cmd_batch(int argc, char **argv) {
         std::cerr << "error: no .bag inputs found\n";
         return 1;
     }
+    std::sort(expanded.begin(), expanded.end());
+    if (limit > 0 && expanded.size() > limit) {
+        std::cout << "limit: using first " << limit << " of " << expanded.size() << " inputs\n";
+        expanded.resize(limit);
+    }
 
     std::error_code ec;
     fs::create_directories(output_dir, ec);
     if (ec) {
         std::cerr << "error: cannot create output directory " << output_dir << ": " << ec.message() << "\n";
         return 1;
+    }
+
+    // Rough batch-level guard before scanning every bag. The per-file preflight
+    // in convert_bag still performs the exact check.
+    std::set<std::string> planned_outputs;
+    for (const auto &input : expanded) {
+        fs::path output = fs::path(output_dir) / (fs::path(input).stem().string() + ".mkv");
+        std::string key = output.string();
+        std::transform(key.begin(), key.end(), key.begin(),
+                       [](unsigned char c) { return char(std::tolower(c)); });
+        if (!planned_outputs.insert(key).second) {
+            std::cerr << "error: duplicate output name: " << output.string() << "\n";
+            return 1;
+        }
+    }
+
+    uint64_t input_bytes = 0;
+    uint64_t existing_bytes = 0;
+    bool input_sizes_ok = true;
+    for (const auto &input : expanded) {
+        std::error_code size_ec;
+        uint64_t size = fs::file_size(input, size_ec);
+        if (size_ec) {
+            input_sizes_ok = false;
+            break;
+        }
+        input_bytes += size;
+        fs::path output = fs::path(output_dir) / (fs::path(input).stem().string() + ".mkv");
+        size = fs::file_size(output, size_ec);
+        if (!size_ec) existing_bytes += size;
+    }
+    if (input_sizes_ok && input_bytes > 0) {
+        const double factor = base.color_output == ColorOutput::Bgra ? 16.0 : 1.7;
+        const uint64_t estimate = uint64_t(double(input_bytes) * factor) + 64ull * 1024ull * 1024ull;
+        std::error_code space_ec;
+        fs::space_info space = fs::space(output_dir, space_ec);
+        if (!space_ec && space.available > 0) {
+            const uint64_t available = space.available + existing_bytes;
+            std::cout << "batch estimate: ~" << format_size(estimate) << " for " << expanded.size()
+                      << " input(s); free: " << format_size(available) << "\n";
+            if (estimate > available) {
+                std::cerr << "error: not enough free space for this batch; use --limit, --color mjpg, "
+                             "or a larger output volume\n";
+                return 1;
+            }
+        }
     }
 
     std::set<std::string> used_outputs;

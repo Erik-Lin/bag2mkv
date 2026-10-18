@@ -14,7 +14,7 @@
 
 ### 1.1 仓库现状（重要）
 
-当前仓库已有 **v0.3.0 可运行实现**（C++17 + CMake，命令行 + Windows GUI）。除下面这些第三方/样本目录外，源码在 `src/`，构建文件是 `CMakeLists.txt`，测试在 `tests/`，使用说明在 `README.md`，贡献指南在 `CONTRIBUTING.md`，版本变化见 `CHANGELOG.md`，许可证是 `LICENSE`。
+当前仓库已有 **v0.3.1 可运行实现**（C++17 + CMake，命令行 + Windows GUI）。除下面这些第三方/样本目录外，源码在 `src/`，构建文件是 `CMakeLists.txt`，测试在 `tests/`，使用说明在 `README.md`，贡献指南在 `CONTRIBUTING.md`，版本变化见 `CHANGELOG.md`，许可证是 `LICENSE`。
 
 | 路径 | 内容 |
 |---|---|
@@ -36,7 +36,7 @@ Orbbec SDK v2 源码（`OrbbecSDK_v2-main/`）和 Body Tracking SDK（`azurekine
 .\build\Release\bag2mkv.exe convert <bag> -o <mkv> [--force] [--no-calibration] [--calibration-json <file>]
                                   [--verify] [--color bgra|mjpg] [--no-original-color]
 .\build\Release\bag2mkv.exe verify <bag> <mkv>
-.\build\Release\bag2mkv.exe batch <files-or-dir...> --output-dir <dir> [--verify] [--continue-on-error]
+.\build\Release\bag2mkv.exe batch <files-or-dir...> --output-dir <dir> [--verify] [--continue-on-error] [--limit N] [--no-recursive]
 .\build\Release\bag2mkv.exe --version
 .\build\Release\bag2mkv.exe --self-test
 .\build\Release\bag2mkv-gui.exe [input.bag] [output.mkv] [--mjpg] [--start]
@@ -591,8 +591,9 @@ CMake 的 post-build 会把 `azurekinectsdk/bin/*.dll` 复制到 `build/Release/
 .\tests\run_sample.cmd -Color mjpg   # 小体积 MJPG-only 测试
 ```
 
-GUI 的“批量目录...”与 CLI `batch` 都按顶层目录扫描 `*.bag`，每个输入生成同名 `.mkv`；
-GUI 批量默认继续处理失败后的剩余文件，CLI 默认停止，需 `--continue-on-error` 才继续。
+GUI 的“批量目录...”与 CLI `batch` 默认递归扫描 `*.bag`，每个输入生成同名 `.mkv`；CLI 可用
+`--no-recursive` 只扫顶层、`--limit N` 先处理一部分；GUI 批量默认继续处理失败后的剩余文件，
+CLI 默认停止，需 `--continue-on-error` 才继续。
 
 如果执行策略拦截 `.ps1`，用 `tests\run_sample.cmd`（内部带 `-ExecutionPolicy Bypass`），或：
 
@@ -714,7 +715,7 @@ GUI 是 Windows 原生 Win32（Common Controls），不依赖 Qt；`bag2mkv-gui`
 6. `K4A_CALIBRATION_FILE` tag 目前是无 target 的全局 tag；playback 按文件名 `calibration.json` 回退成功，但严格 target UID 未设置。
 7. 写线程磁盘队列较慢时 K4A 仍会打印 “Disk write speed is too low”；`k4a_set_debug_message_handler` 过滤不到这条内部日志。BGRA 模式每帧 sleep 10 ms、MJPG 2 ms 限速；慢磁盘/大文件仍可能看到该日志。
 8. 默认输出是 raw 深度 + BGRA 彩色（~12.5 GB/45 s），没有可选的 FFV1 等无损压缩容器；BGRA 体积是旧播放器兼容的代价。
-9. GUI 当前仅 Windows Win32；没有安装包、没有多语言、没有可编辑队列。批量模式按顶层目录处理，不递归；`--start`、`--mjpg`、`--batch`、`--batch-output` 主要用于预填和冒烟测试。
+9. GUI 当前仅 Windows Win32；没有安装包、没有多语言、没有可编辑队列。批量模式默认递归扫描，CLI 可用 `--no-recursive` 关闭；`--start`、`--mjpg`、`--batch`、`--batch-output` 主要用于预填和冒烟测试。
 
 ---
 
