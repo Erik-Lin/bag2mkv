@@ -1,6 +1,10 @@
 #include "converter.hpp"
 #include "errors.hpp"
 #include "mkv2bag.hpp"
+#include "ros1_export.hpp"
+#include "ros1_input.hpp"
+#include "ros2_export.hpp"
+#include "ros2_input.hpp"
 #include "scan.hpp"
 
 #include <algorithm>
@@ -36,6 +40,13 @@ void print_overview() {
               << "                                    Convert many bags, one MKV per input.\n"
               << "  mkv2bag <input.mkv> [-o output.bag]\n"
               << "                                    Rebuild an Orbbec ROSBAG V2.0 from a K4A MKV.\n"
+              << "  ros1 <input.bag> -o <output.bag>\n"
+              << "                                    Export an Orbbec bag as a standard ROS1 bag.\n"
+              << "  ros1mkv <input.bag> -o <out.mkv>  Convert a standard ROS1 bag to K4A MKV.\n"
+              << "  ros2 <input.bag> -o <output-dir>  Export an Orbbec bag as a ROS2 sqlite3 bag.\n"
+              << "  ros2mkv <bag-dir> -o <out.mkv>    Convert a ROS2 sqlite3 bag to K4A MKV.\n"
+              << "  mkv2ros1 <input.mkv> -o <out.bag> Convert a K4A MKV to standard ROS1 bag.\n"
+              << "  mkv2ros2 <input.mkv> -o <out-dir> Convert a K4A MKV to ROS2 sqlite3 bag.\n"
               << "  verify  <input.bag> <out.mkv>     Independently verify frames, timestamps and calibration.\n"
               << "  help [command]                    Show this help, or detailed help for one command.\n"
               << "\n"
@@ -173,6 +184,138 @@ void print_mkv2bag_help() {
               << "\n"
               << "EXIT CODES\n"
               << "  0 success; 1 conversion failure; 2 usage error.\n";
+}
+
+void print_ros1_help() {
+    std::cout << "bag2mkv ros1 " << version() << " - export an Orbbec bag as a standard ROS1 bag\n"
+              << "\n"
+              << "USAGE\n"
+              << "  bag2mkv ros1 <input.bag> -o <output.bag> [--force]\n"
+              << "\n"
+              << "Color MJPEG is written as sensor_msgs/CompressedImage (format=jpeg), keeping the\n"
+              << "original JPEG bytes. Raw color, depth and IR are written as sensor_msgs/Image;\n"
+              << "depth/IR use encoding 16UC1 (little-endian). The output includes standard ROS1\n"
+              << "connection records, chunk index data and chunk-info records.\n"
+              << "\n"
+              << "Topic names\n"
+              << "  /camera/color/image_raw/compressed  color MJPEG\n"
+              << "  /camera/color/image_raw             raw color\n"
+              << "  /camera/depth/image_raw             depth\n"
+              << "  /camera/ir/image_raw                IR\n"
+              << "\n"
+              << "OPTIONS\n"
+              << "  -o, --output <file>   Output ROS1 bag.\n"
+              << "  --force               Overwrite an existing output bag.\n"
+              << "  -h, --help            Show this help and exit.\n"
+              << "\n"
+              << "EXAMPLES\n"
+              << "  bag2mkv ros1 capture.bag -o capture_ros1.bag\n"
+              << "  bag2mkv ros1 capture.bag -o capture_ros1.bag --force\n"
+              << "\n"
+              << "This command reads an Orbbec ROSBAG V2.0. It does not read standard ROS1 input yet.\n";
+}
+
+void print_ros1mkv_help() {
+    std::cout << "bag2mkv ros1mkv " << version() << " - convert a standard ROS1 bag to a K4A MKV\n"
+              << "\n"
+              << "USAGE\n"
+              << "  bag2mkv ros1mkv <input.bag> -o <output.mkv> [--color bgra|mjpg] [--force]\n"
+              << "\n"
+              << "Reads standard ROS1 sensor_msgs/Image and sensor_msgs/CompressedImage messages.\n"
+              << "Color supports rgb8, bgr8, bgra8, mono8 and JPEG CompressedImage; depth/IR support\n"
+              << "16UC1/mono16 (IR also accepts 8UC1 and expands to 16-bit).\n"
+              << "\n"
+              << "K4A only supports specific color/depth resolutions. The input must use one of:\n"
+              << "  color: 1920x1080, 3840x2160, 2560x1440, 2048x1536, 4096x3072, 1280x720\n"
+              << "  depth/IR: 640x576, 320x288, 512x512, 1024x1024\n"
+              << "Other resolutions are rejected rather than silently resized.\n"
+              << "\n"
+              << "OPTIONS\n"
+              << "  -o, --output <file>   Output K4A MKV.\n"
+              << "  --color bgra|mjpg     bgra (default) decodes CompressedImage to BGRA;\n"
+              << "                        mjpg copies JPEG CompressedImage bytes unchanged.\n"
+              << "  --force               Overwrite an existing output MKV.\n"
+              << "  -h, --help            Show this help and exit.\n"
+              << "\n"
+              << "EXAMPLES\n"
+              << "  bag2mkv ros1mkv capture_ros1.bag -o capture.mkv\n"
+              << "  bag2mkv ros1mkv capture_ros1.bag -o capture.mkv --color mjpg --force\n";
+}
+
+void print_ros2_help() {
+    std::cout << "bag2mkv ros2 " << version() << " - export an Orbbec bag as a ROS2 sqlite3 bag\n"
+              << "\n"
+              << "USAGE\n"
+              << "  bag2mkv ros2 <input.bag> -o <output-dir> [--force]\n"
+              << "\n"
+              << "Creates a ROS2 bag2 directory containing metadata.yaml and bag_0.db3.\n"
+              << "Messages use CDR serialization:\n"
+              << "  sensor_msgs/msg/CompressedImage  color JPEG (original bytes preserved)\n"
+              << "  sensor_msgs/msg/Image            raw color, depth (16UC1) and IR\n"
+              << "\n"
+              << "Topics\n"
+              << "  /camera/color/image_raw/compressed\n"
+              << "  /camera/color/image_raw\n"
+              << "  /camera/depth/image_raw\n"
+              << "  /camera/ir/image_raw\n"
+              << "\n"
+              << "OPTIONS\n"
+              << "  -o, --output <dir>   Output ROS2 bag directory.\n"
+              << "  --force              Overwrite metadata.yaml/bag_0.db3.\n"
+              << "  -h, --help           Show this help and exit.\n";
+}
+
+void print_ros2mkv_help() {
+    std::cout << "bag2mkv ros2mkv " << version() << " - convert a ROS2 sqlite3 bag to a K4A MKV\n"
+              << "\n"
+              << "USAGE\n"
+              << "  bag2mkv ros2mkv <bag-dir> -o <output.mkv> [--color bgra|mjpg] [--force]\n"
+              << "\n"
+              << "Reads metadata.yaml + *.db3 from a ROS2 bag2 directory. Sensor messages use CDR:\n"
+              << "  sensor_msgs/msg/Image            rgb8/bgr8/bgra8/mono8, depth/IR 16UC1\n"
+              << "  sensor_msgs/msg/CompressedImage  jpeg\n"
+              << "\n"
+              << "K4A resolution limits are the same as ros1mkv:\n"
+              << "  color: 1920x1080, 1280x720, 3840x2160, 2560x1440, 2048x1536, 4096x3072\n"
+              << "  depth/IR: 640x576, 320x288, 512x512, 1024x1024\n"
+              << "Other dimensions are rejected rather than resized.\n"
+              << "\n"
+              << "OPTIONS\n"
+              << "  -o, --output <file>   Output K4A MKV.\n"
+              << "  --color bgra|mjpg     bgra (default) decodes JPEG to BGRA; mjpg copies JPEG.\n"
+              << "  --force               Overwrite an existing output MKV.\n"
+              << "  -h, --help            Show this help and exit.\n";
+}
+
+void print_mkv2ros1_help() {
+    std::cout << "bag2mkv mkv2ros1 " << version() << " - convert a K4A MKV to a standard ROS1 bag\n"
+              << "\n"
+              << "USAGE\n"
+              << "  bag2mkv mkv2ros1 <input.mkv> -o <output.bag> [--force]\n"
+              << "\n"
+              << "The K4A MKV is first rebuilt as an Orbbec bag, then exported as standard ROS1.\n"
+              << "Original MJPEG (ORIGINAL_COLOR_MJPG) is preserved as CompressedImage/jpeg.\n"
+              << "Depth and IR are written as Image/16UC1.\n"
+              << "\n"
+              << "OPTIONS\n"
+              << "  -o, --output <file>   Output ROS1 bag.\n"
+              << "  --force               Overwrite existing output.\n"
+              << "  -h, --help            Show this help and exit.\n";
+}
+
+void print_mkv2ros2_help() {
+    std::cout << "bag2mkv mkv2ros2 " << version() << " - convert a K4A MKV to a ROS2 sqlite3 bag\n"
+              << "\n"
+              << "USAGE\n"
+              << "  bag2mkv mkv2ros2 <input.mkv> -o <output-dir> [--force]\n"
+              << "\n"
+              << "The K4A MKV is first rebuilt as an Orbbec bag, then exported as ROS2 bag2\n"
+              << "(metadata.yaml + bag_0.db3, CDR messages).\n"
+              << "\n"
+              << "OPTIONS\n"
+              << "  -o, --output <dir>   Output ROS2 bag directory.\n"
+              << "  --force              Overwrite metadata.yaml/bag_0.db3.\n"
+              << "  -h, --help           Show this help and exit.\n";
 }
 
 void print_inspect_help() {
@@ -569,6 +712,363 @@ int cmd_mkv2bag(int argc, char **argv) {
     }
 }
 
+int cmd_ros1(int argc, char **argv) {
+    for (int i = 2; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--help" || arg == "-h") {
+            print_ros1_help();
+            return 0;
+        }
+    }
+    Ros1ExportOptions options;
+    for (int i = 2; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "-o" || arg == "--output") {
+            if (i + 1 >= argc) {
+                std::cerr << "error: missing value for " << arg << "\n";
+                return 2;
+            }
+            options.output_bag = argv[++i];
+        } else if (arg == "--force") {
+            options.force = true;
+        } else if (!arg.empty() && arg[0] == '-') {
+            std::cerr << "error: unknown option for ros1: " << arg << "\n";
+            return 2;
+        } else if (options.input_bag.empty()) {
+            options.input_bag = arg;
+        } else {
+            std::cerr << "error: ros1 accepts one input bag\n";
+            return 2;
+        }
+    }
+    if (options.input_bag.empty()) {
+        std::cerr << "error: ros1 requires an input bag\n\n";
+        print_ros1_help();
+        return 2;
+    }
+    if (options.output_bag.empty()) {
+        fs::path out(options.input_bag);
+        out.replace_extension(".ros1.bag");
+        options.output_bag = out.string();
+    }
+    try {
+        Ros1ExportSummary summary = export_ob_bag_to_ros1(options, [](const std::string &line) {
+            std::cout << line << "\n";
+        });
+        std::cout << "ros1: " << summary.color_frames << " color, " << summary.depth_frames << " depth, "
+                  << summary.ir_frames << " IR\n";
+        std::cout << "output: " << options.output_bag << " (" << summary.bag_size << " bytes)\n";
+        return 0;
+    } catch (const std::exception &e) {
+        std::cerr << "error: " << e.what() << "\n";
+        return 1;
+    }
+}
+
+int cmd_ros1mkv(int argc, char **argv) {
+    for (int i = 2; i < argc; ++i) {
+        if (std::string(argv[i]) == "--help" || std::string(argv[i]) == "-h") {
+            print_ros1mkv_help();
+            return 0;
+        }
+    }
+    Ros1InputOptions options;
+    for (int i = 2; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "-o" || arg == "--output") {
+            if (i + 1 >= argc) {
+                std::cerr << "error: missing value for " << arg << "\n";
+                return 2;
+            }
+            options.output_mkv = argv[++i];
+        } else if (arg == "--color") {
+            if (i + 1 >= argc) {
+                std::cerr << "error: missing value for --color\n";
+                return 2;
+            }
+            std::string value = argv[++i];
+            if (value == "bgra") options.color_mjpg = false;
+            else if (value == "mjpg" || value == "mjpeg") options.color_mjpg = true;
+            else {
+                std::cerr << "error: --color must be bgra or mjpg\n";
+                return 2;
+            }
+        } else if (arg == "--force") {
+            options.force = true;
+        } else if (!arg.empty() && arg[0] == '-') {
+            std::cerr << "error: unknown option for ros1mkv: " << arg << "\n";
+            return 2;
+        } else if (options.input_bag.empty()) {
+            options.input_bag = arg;
+        } else {
+            std::cerr << "error: ros1mkv accepts one input bag\n";
+            return 2;
+        }
+    }
+    if (options.input_bag.empty()) {
+        std::cerr << "error: ros1mkv requires an input bag\n\n";
+        print_ros1mkv_help();
+        return 2;
+    }
+    if (options.output_mkv.empty()) {
+        fs::path out(options.input_bag);
+        out.replace_extension(".mkv");
+        options.output_mkv = out.string();
+    }
+    try {
+        Ros1InputSummary summary = convert_ros1_to_mkv(options, [](const std::string &line) {
+            std::cout << line << "\n";
+        });
+        std::cout << "ros1mkv: " << summary.color_frames << " color, " << summary.depth_frames << " depth, "
+                  << summary.ir_frames << " IR\n";
+        std::cout << "output: " << options.output_mkv << " (" << summary.mkv_size << " bytes)\n";
+        return 0;
+    } catch (const std::exception &e) {
+        std::cerr << "error: " << e.what() << "\n";
+        return 1;
+    }
+}
+
+int cmd_ros2(int argc, char **argv) {
+    for (int i = 2; i < argc; ++i) {
+        if (std::string(argv[i]) == "--help" || std::string(argv[i]) == "-h") {
+            print_ros2_help();
+            return 0;
+        }
+    }
+    Ros2ExportOptions options;
+    for (int i = 2; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "-o" || arg == "--output") {
+            if (i + 1 >= argc) {
+                std::cerr << "error: missing value for " << arg << "\n";
+                return 2;
+            }
+            options.output_dir = argv[++i];
+        } else if (arg == "--force") {
+            options.force = true;
+        } else if (!arg.empty() && arg[0] == '-') {
+            std::cerr << "error: unknown option for ros2: " << arg << "\n";
+            return 2;
+        } else if (options.input_bag.empty()) {
+            options.input_bag = arg;
+        } else {
+            std::cerr << "error: ros2 accepts one input bag\n";
+            return 2;
+        }
+    }
+    if (options.input_bag.empty()) {
+        std::cerr << "error: ros2 requires an input bag\n\n";
+        print_ros2_help();
+        return 2;
+    }
+    if (options.output_dir.empty()) {
+        fs::path out(options.input_bag);
+        out.replace_extension("");
+        options.output_dir = (out.string() + "_ros2");
+    }
+    try {
+        Ros2ExportSummary summary = export_ob_bag_to_ros2(options, [](const std::string &line) {
+            std::cout << line << "\n";
+        });
+        std::cout << "ros2: " << summary.color_frames << " color, " << summary.depth_frames << " depth, "
+                  << summary.ir_frames << " IR, " << summary.message_count << " messages\n";
+        std::cout << "output: " << options.output_dir << "\n";
+        return 0;
+    } catch (const std::exception &e) {
+        std::cerr << "error: " << e.what() << "\n";
+        return 1;
+    }
+}
+
+int cmd_ros2mkv(int argc, char **argv) {
+    for (int i = 2; i < argc; ++i) {
+        if (std::string(argv[i]) == "--help" || std::string(argv[i]) == "-h") {
+            print_ros2mkv_help();
+            return 0;
+        }
+    }
+    Ros2InputOptions options;
+    for (int i = 2; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "-o" || arg == "--output") {
+            if (i + 1 >= argc) {
+                std::cerr << "error: missing value for " << arg << "\n";
+                return 2;
+            }
+            options.output_mkv = argv[++i];
+        } else if (arg == "--color") {
+            if (i + 1 >= argc) {
+                std::cerr << "error: missing value for --color\n";
+                return 2;
+            }
+            std::string value = argv[++i];
+            if (value == "bgra") options.color_mjpg = false;
+            else if (value == "mjpg" || value == "mjpeg") options.color_mjpg = true;
+            else {
+                std::cerr << "error: --color must be bgra or mjpg\n";
+                return 2;
+            }
+        } else if (arg == "--force") {
+            options.force = true;
+        } else if (!arg.empty() && arg[0] == '-') {
+            std::cerr << "error: unknown option for ros2mkv: " << arg << "\n";
+            return 2;
+        } else if (options.input_dir.empty()) {
+            options.input_dir = arg;
+        } else {
+            std::cerr << "error: ros2mkv accepts one input directory\n";
+            return 2;
+        }
+    }
+    if (options.input_dir.empty()) {
+        std::cerr << "error: ros2mkv requires a bag directory\n\n";
+        print_ros2mkv_help();
+        return 2;
+    }
+    if (options.output_mkv.empty()) {
+        fs::path out(options.input_dir);
+        if (out.filename().empty()) out = out.parent_path();
+        options.output_mkv = (out.string() + ".mkv");
+    }
+    try {
+        Ros2InputSummary summary = convert_ros2_to_mkv(options, [](const std::string &line) {
+            std::cout << line << "\n";
+        });
+        std::cout << "ros2mkv: " << summary.color_frames << " color, " << summary.depth_frames << " depth, "
+                  << summary.ir_frames << " IR\n";
+        std::cout << "output: " << options.output_mkv << " (" << summary.mkv_size << " bytes)\n";
+        return 0;
+    } catch (const std::exception &e) {
+        std::cerr << "error: " << e.what() << "\n";
+        return 1;
+    }
+}
+
+int cmd_mkv2ros1(int argc, char **argv) {
+    for (int i = 2; i < argc; ++i) {
+        if (std::string(argv[i]) == "--help" || std::string(argv[i]) == "-h") {
+            print_mkv2ros1_help();
+            return 0;
+        }
+    }
+    std::string input;
+    std::string output;
+    bool force = false;
+    for (int i = 2; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "-o" || arg == "--output") {
+            if (i + 1 >= argc) return 2;
+            output = argv[++i];
+        } else if (arg == "--force") {
+            force = true;
+        } else if (!arg.empty() && arg[0] == '-') {
+            std::cerr << "error: unknown option for mkv2ros1: " << arg << "\n";
+            return 2;
+        } else if (input.empty()) {
+            input = arg;
+        } else {
+            std::cerr << "error: mkv2ros1 accepts one input MKV\n";
+            return 2;
+        }
+    }
+    if (input.empty() || output.empty()) {
+        std::cerr << "error: mkv2ros1 requires <input.mkv> -o <output.bag>\n";
+        return 2;
+    }
+    try {
+        const fs::path temp = fs::path(output + ".orbbec.tmp.bag");
+        fs::remove(temp);
+        try {
+            Mkv2BagOptions to_bag;
+            to_bag.input_mkv = input;
+            to_bag.output_bag = temp.string();
+            to_bag.force = true;
+            mkv_to_bag(to_bag);
+            Ros1ExportOptions export_options;
+            export_options.input_bag = temp.string();
+            export_options.output_bag = output;
+            export_options.force = force;
+            Ros1ExportSummary summary = export_ob_bag_to_ros1(export_options, [](const std::string &line) {
+                std::cout << line << "\n";
+            });
+            fs::remove(temp);
+            std::cout << "mkv2ros1: " << summary.color_frames << " color, " << summary.depth_frames << " depth, "
+                      << summary.ir_frames << " IR\n";
+            std::cout << "output: " << output << " (" << summary.bag_size << " bytes)\n";
+            return 0;
+        } catch (...) {
+            fs::remove(temp);
+            throw;
+        }
+    } catch (const std::exception &e) {
+        std::cerr << "error: " << e.what() << "\n";
+        return 1;
+    }
+}
+
+int cmd_mkv2ros2(int argc, char **argv) {
+    for (int i = 2; i < argc; ++i) {
+        if (std::string(argv[i]) == "--help" || std::string(argv[i]) == "-h") {
+            print_mkv2ros2_help();
+            return 0;
+        }
+    }
+    std::string input;
+    std::string output;
+    bool force = false;
+    for (int i = 2; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "-o" || arg == "--output") {
+            if (i + 1 >= argc) return 2;
+            output = argv[++i];
+        } else if (arg == "--force") {
+            force = true;
+        } else if (!arg.empty() && arg[0] == '-') {
+            std::cerr << "error: unknown option for mkv2ros2: " << arg << "\n";
+            return 2;
+        } else if (input.empty()) {
+            input = arg;
+        } else {
+            std::cerr << "error: mkv2ros2 accepts one input MKV\n";
+            return 2;
+        }
+    }
+    if (input.empty() || output.empty()) {
+        std::cerr << "error: mkv2ros2 requires <input.mkv> -o <output-dir>\n";
+        return 2;
+    }
+    try {
+        const fs::path temp = fs::path(output + ".orbbec.tmp.bag");
+        fs::remove(temp);
+        try {
+            Mkv2BagOptions to_bag;
+            to_bag.input_mkv = input;
+            to_bag.output_bag = temp.string();
+            to_bag.force = true;
+            mkv_to_bag(to_bag);
+            Ros2ExportOptions export_options;
+            export_options.input_bag = temp.string();
+            export_options.output_dir = output;
+            export_options.force = force;
+            Ros2ExportSummary summary = export_ob_bag_to_ros2(export_options, [](const std::string &line) {
+                std::cout << line << "\n";
+            });
+            fs::remove(temp);
+            std::cout << "mkv2ros2: " << summary.color_frames << " color, " << summary.depth_frames << " depth, "
+                      << summary.ir_frames << " IR, " << summary.message_count << " messages\n";
+            std::cout << "output: " << output << "\n";
+            return 0;
+        } catch (...) {
+            fs::remove(temp);
+            throw;
+        }
+    } catch (const std::exception &e) {
+        std::cerr << "error: " << e.what() << "\n";
+        return 1;
+    }
+}
+
 int cmd_inspect(int argc, char **argv) {
     if (argc == 3 && (std::string(argv[2]) == "--help" || std::string(argv[2]) == "-h")) {
         print_inspect_help();
@@ -711,6 +1211,18 @@ int main(int argc, char **argv) {
                     print_batch_help();
                 } else if (topic == "mkv2bag") {
                     print_mkv2bag_help();
+                } else if (topic == "ros1") {
+                    print_ros1_help();
+                } else if (topic == "ros1mkv") {
+                    print_ros1mkv_help();
+                } else if (topic == "ros2") {
+                    print_ros2_help();
+                } else if (topic == "ros2mkv") {
+                    print_ros2mkv_help();
+                } else if (topic == "mkv2ros1") {
+                    print_mkv2ros1_help();
+                } else if (topic == "mkv2ros2") {
+                    print_mkv2ros2_help();
                 } else if (topic == "inspect") {
                     print_inspect_help();
                 } else if (topic == "verify") {
@@ -748,6 +1260,24 @@ int main(int argc, char **argv) {
         }
         if (command == "mkv2bag") {
             return cmd_mkv2bag(argc, argv);
+        }
+        if (command == "ros1") {
+            return cmd_ros1(argc, argv);
+        }
+        if (command == "ros1mkv") {
+            return cmd_ros1mkv(argc, argv);
+        }
+        if (command == "ros2") {
+            return cmd_ros2(argc, argv);
+        }
+        if (command == "ros2mkv") {
+            return cmd_ros2mkv(argc, argv);
+        }
+        if (command == "mkv2ros1") {
+            return cmd_mkv2ros1(argc, argv);
+        }
+        if (command == "mkv2ros2") {
+            return cmd_mkv2ros2(argc, argv);
         }
         if (command == "verify") {
             return cmd_verify(argc, argv);

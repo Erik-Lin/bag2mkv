@@ -14,7 +14,7 @@
 
 ### 1.1 仓库现状（重要）
 
-当前仓库已有 **v0.4.3 可运行实现**（C++17 + CMake，命令行 + Windows GUI）。除下面这些第三方/样本目录外，源码在 `src/`，构建文件是 `CMakeLists.txt`，使用说明在 `README.md`，贡献指南在 `CONTRIBUTING.md`，版本变化见 `CHANGELOG.md`，许可证是 `LICENSE`。`tests/` 和 `build/` 是本机生成/测试目录，已加入 `.gitignore`，不提交。
+当前仓库已有 **v0.5.0 可运行实现**（C++17 + CMake，命令行 + Windows GUI + ROS1/ROS2 双向 CLI）。除下面这些第三方/样本目录外，源码在 `src/`，构建文件是 `CMakeLists.txt`，使用说明在 `README.md`，贡献指南在 `CONTRIBUTING.md`，版本变化见 `CHANGELOG.md`，许可证是 `LICENSE`。`tests/` 和 `build/` 是本机生成/测试目录，已加入 `.gitignore`，不提交。
 
 | 路径 | 内容 |
 |---|---|
@@ -27,7 +27,7 @@ Orbbec SDK v2 源码（`OrbbecSDK_v2-main/`）和 Body Tracking SDK（`azurekine
 
 样本文件很大，**不要修改、不要提交、不要复制进构建产物**。它们只用于测试和格式对照。
 
-### 1.2 已实现的 v0.4.3
+### 1.2 已实现的 v0.5.0
 
 ```powershell
 .\build\Release\bag2mkv.exe --help
@@ -38,6 +38,12 @@ Orbbec SDK v2 源码（`OrbbecSDK_v2-main/`）和 Body Tracking SDK（`azurekine
 .\build\Release\bag2mkv.exe verify <bag> <mkv>
 .\build\Release\bag2mkv.exe batch <files-or-dir...> --output-dir <dir> [--verify] [--continue-on-error] [--limit N] [--no-recursive]
 .\build\Release\bag2mkv.exe mkv2bag <input.mkv> [--output <output.bag>] [--force]
+.\build\Release\bag2mkv.exe ros1 <input.bag> -o <output.bag> [--force]
+.\build\Release\bag2mkv.exe ros1mkv <input.bag> -o <output.mkv> [--color bgra|mjpg] [--force]
+.\build\Release\bag2mkv.exe ros2 <input.bag> -o <output-dir> [--force]
+.\build\Release\bag2mkv.exe ros2mkv <bag-dir> -o <output.mkv> [--color bgra|mjpg] [--force]
+.\build\Release\bag2mkv.exe mkv2ros1 <input.mkv> -o <output.bag> [--force]
+.\build\Release\bag2mkv.exe mkv2ros2 <input.mkv> -o <output-dir> [--force]
 .\build\Release\bag2mkv.exe --version
 .\build\Release\bag2mkv.exe --self-test
 .\build\Release\bag2mkv-gui.exe [input-dir] [output-dir] [--mjpg] [--start]
@@ -63,6 +69,8 @@ GUI 与 CLI 共用 `bag2mkv_core`：输入目录/输出目录、自动判断 bag
   - depth `640x576 fx=504.579 fy=504.583 cx=338.478 cy=345.674`
   - color `1920x1080 fx=1118.69 fy=1118.11 cx=963.672 cy=535.888`
 - K4A playback 的彩色是 `BGRA` 1920×1080，深度是 `DEPTH16` 小端。
+- ROS1/ROS2 已通过合成样本验证：Orbbec bag → standard ROS1（含 index data）→ MKV；Orbbec bag → ROS2 sqlite3/CDR → MKV；K4A MKV → ROS1/ROS2。真实 RealSense `outdoors_1color.bag` 可解析，但其 640×480 彩色 / 1280×720 深度不满足 K4A 固定分辨率，输入路径会明确拒绝。
+- GUI 仍只处理 Orbbec bag ↔ K4A MKV；ROS 命令是 CLI。`mkv2ros1/2` 目前先写临时 Orbbec bag 再导出，功能正确但多一次磁盘 I/O。
 
 ---
 
@@ -533,6 +541,10 @@ src/
   bag.hpp / bag.cpp     // 容器、chunk、LZ4、连接/消息解析
   bag_writer.hpp/.cpp   // 反向：LZ4 ROSBAG writer（chunk/connection/chunk-info）
   mkv2bag.hpp/.cpp      // 反向：K4A playback + manifest → bag
+  ros1_export.hpp/.cpp  // Orbbec bag → standard ROS1 bag
+  ros1_input.hpp/.cpp   // standard ROS1 bag → K4A MKV
+  ros2_export.hpp/.cpp  // Orbbec bag → ROS2 sqlite3/CDR bag
+  ros2_input.hpp/.cpp   // ROS2 sqlite3/CDR bag → K4A MKV
   json.hpp/.cpp         // manifest/JSONL 的小型 JSON DOM
   scan.hpp / scan.cpp   // Pass 1: 索引、profile/property/device、逐帧 hash
   lz4_util.hpp/.cpp     // LZ4 frame 解压/压缩
@@ -543,6 +555,7 @@ src/
   util.hpp/.cpp         // SHA-256、base64、JSON escape、BE swap
 third_party/lz4/        // vendored LZ4
 third_party/bzip2/      // vendored bzip2 1.0.8（BSD-like）
+third_party/sqlite/     // SQLite 3.46.1 amalgamation（public domain）
 ```
 
 构建目标：`bag2mkv_core`（静态库）+ `bag2mkv`（CLI）+ `bag2mkv-gui`（WIN32 GUI）。

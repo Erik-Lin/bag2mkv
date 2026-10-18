@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.0
+
+- 新增标准 ROS1 bag 输出 `ros1`：带 connection/index data/chunk-info，彩色 MJPEG 保留为 `sensor_msgs/CompressedImage`，深度/IR 为 `Image` (`16UC1`)。
+- 新增标准 ROS1 bag 输入 `ros1mkv`：解析 ROSBAG V2.0，支持 LZ4/BZ2/none chunk、Image/CompressedImage，并写入 K4A MKV。
+- 新增 ROS2 sqlite3 bag 输出 `ros2`：`metadata.yaml` + `bag_0.db3`，CDR 序列化 `sensor_msgs/msg/Image` / `CompressedImage`。
+- 新增 ROS2 sqlite3 bag 输入 `ros2mkv`：读取 `*.db3` 和 CDR 消息，写入 K4A MKV。
+- 新增 `mkv2ros1` / `mkv2ros2`：K4A MKV 经临时 Orbbec bag 转成 ROS1/ROS2 bag。
+- vendor SQLite 3.46.1 amalgamation（public domain），Windows 构建无需系统 SQLite。
+- `BagWriter` 增加 `Ros1` flavor：message time/chunk-info time 使用 ROS time，并写入标准 index data；Orbbec 输出保持原格式。
+- 限制：K4A 分辨率固定，ROS 输入尺寸不匹配时明确拒绝；GUI 仍只做 Orbbec bag ↔ MKV。
+
 ## 0.4.3
 
 - GUI 主界面简化为：输入目录 + 输出目录 + 开始转换。

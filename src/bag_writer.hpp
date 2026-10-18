@@ -20,9 +20,14 @@ struct BagConnection {
 // Chunks use LZ4 frames; the bag reader also accepts compression=none/bz2.
 // Connection records are written in the first chunk and again in the index
 // section, matching the original bag.
+enum class BagFlavor {
+    Orbbec,
+    Ros1,
+};
+
 class BagWriter {
 public:
-    explicit BagWriter(const std::string &path);
+    explicit BagWriter(const std::string &path, BagFlavor flavor = BagFlavor::Orbbec);
     ~BagWriter();
 
     BagWriter(const BagWriter &) = delete;
@@ -48,6 +53,7 @@ private:
 
     std::ofstream out_;
     std::string path_;
+    BagFlavor flavor_ = BagFlavor::Orbbec;
     std::vector<BagConnection> connections_;
     std::vector<uint8_t> chunk_;
     std::vector<PendingIndex> pending_;
@@ -72,6 +78,7 @@ private:
                                     const std::string &value);
     static void append_u32_field(std::vector<uint8_t> &out, const std::string &name, uint32_t value);
     static void append_u64_field(std::vector<uint8_t> &out, const std::string &name, uint64_t value);
+    static void append_time_field(std::vector<uint8_t> &out, const std::string &name, uint64_t time_ns);
     static void append_u8_field(std::vector<uint8_t> &out, const std::string &name, uint8_t value);
 
     static void append_record_header(std::vector<uint8_t> &out, const std::vector<uint8_t> &header);

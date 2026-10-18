@@ -67,7 +67,7 @@ size_t find_field_value_offset(const std::vector<uint8_t> &header, const std::st
 
 }  // namespace
 
-BagWriter::BagWriter(const std::string &path) : path_(path) {
+BagWriter::BagWriter(const std::string &path, BagFlavor flavor) : path_(path), flavor_(flavor) {
     out_.open(path_, std::ios::binary | std::ios::trunc);
     if (!out_) {
         throw std::runtime_error("cannot create bag: " + path_);
@@ -138,6 +138,13 @@ void BagWriter::append_u64_field(std::vector<uint8_t> &out, const std::string &n
     append_field(out, name, bytes_u64(value));
 }
 
+void BagWriter::append_time_field(std::vector<uint8_t> &out, const std::string &name, uint64_t time_ns) {
+    std::vector<uint8_t> value;
+    append_u32(value, static_cast<uint32_t>(time_ns / 1000000000ull));
+    append_u32(value, static_cast<uint32_t>(time_ns % 1000000000ull));
+    append_field(out, name, value);
+}
+
 void BagWriter::append_u8_field(std::vector<uint8_t> &out, const std::string &name, uint8_t value) {
     append_field(out, name, bytes_u8(value));
 }
@@ -161,6 +168,7 @@ std::vector<uint8_t> BagWriter::connection_header(const BagConnection &connectio
         append_u32_field(header, "conn", connection.id);
         append_string_field(header, "topic", connection.topic);
     } else {
+        append_string_field(header, "topic", connection.topic);
         append_string_field(header, "md5sum", connection.md5);
         append_string_field(header, "message_definition", connection.definition);
         append_string_field(header, "type", connection.type);
@@ -227,7 +235,11 @@ void BagWriter::add_message(uint32_t conn_id, uint64_t time_ns, const std::vecto
     std::vector<uint8_t> header;
     append_u8_field(header, "op", 0x02);
     append_u32_field(header, "conn", conn_id);
-    append_u64_field(header, "time", time_ns);
+    if (flavor_ == BagFlavor::Ros1) {
+        append_time_field(header, "time", time_ns);
+    } else {
+        append_u64_field(header, "time", time_ns);
+    }
 
     std::vector<uint8_t> record;
     append_record(record, header, payload);
@@ -276,6 +288,33 @@ void BagWriter::flush_chunk() {
     encoded.insert(encoded.end(), compressed.begin(), compressed.end());
     write_bytes(encoded);
 
+    // Standard ROS1 bags put per-connection index data immediately after the
+    // chunk. The Orbbec reader ignores op=4 records, while rosbag/rosbags use
+    // them for random access.
+    if (flavor_ == BagFlavor::Ros1) {
+        for (const auto &connection : connections_) {
+            std::vector<const PendingIndex *> entries;
+            for (const auto &entry : pending_) {
+                if (entry.conn_id == connection.id) entries.push_back(&entry);
+            }
+            if (entries.empty()) continue;
+            std::vector<uint8_t> index_header;
+            append_u8_field(index_header, "op", 0x04);
+            append_u32_field(index_header, "ver", 1);
+            append_u32_field(index_header, "conn", connection.id);
+            append_u32_field(index_header, "count", static_cast<uint32_t>(entries.size()));
+            std::vector<uint8_t> index_data;
+            for (const PendingIndex *entry : entries) {
+                append_u32(index_data, static_cast<uint32_t>(entry->time_ns / 1000000000ull));
+                append_u32(index_data, static_cast<uint32_t>(entry->time_ns % 1000000000ull));
+                append_u32(index_data, entry->offset);
+            }
+            std::vector<uint8_t> index_record;
+            append_record(index_record, index_header, index_data);
+            write_bytes(index_record);
+        }
+    }
+
     chunks_.push_back(std::move(info));
     chunk_.clear();
     pending_.clear();
@@ -304,8 +343,13 @@ void BagWriter::close() {
         append_u8_field(header, "op", 0x06);
         append_u32_field(header, "ver", 1);
         append_u64_field(header, "chunk_pos", chunk.file_offset);
-        append_u64_field(header, "start_time", chunk.start_time);
-        append_u64_field(header, "end_time", chunk.end_time);
+        if (flavor_ == BagFlavor::Ros1) {
+            append_time_field(header, "start_time", chunk.start_time);
+            append_time_field(header, "end_time", chunk.end_time);
+        } else {
+            append_u64_field(header, "start_time", chunk.start_time);
+            append_u64_field(header, "end_time", chunk.end_time);
+        }
         append_u32_field(header, "count", static_cast<uint32_t>(chunk.counts.size()));
         std::vector<uint8_t> data;
         for (const auto &kv : chunk.counts) {

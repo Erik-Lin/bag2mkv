@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(bag2mkv VERSION 0.4.3 LANGUAGES C CXX)
+project(bag2mkv VERSION 0.5.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -32,6 +32,13 @@ if(MSVC)
     target_compile_options(bz2 PRIVATE /W0)
 endif()
 
+add_library(sqlite3 STATIC third_party/sqlite/sqlite3.c)
+target_include_directories(sqlite3 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite")
+if(MSVC)
+    target_compile_options(sqlite3 PRIVATE /W0)
+    target_compile_definitions(sqlite3 PRIVATE SQLITE_OMIT_LOAD_EXTENSION)
+endif()
+
 add_library(bag2mkv_core STATIC
     src/bag.cpp
     src/bag_writer.cpp
@@ -45,6 +52,10 @@ add_library(bag2mkv_core STATIC
     src/manifest.cpp
     src/converter.cpp
     src/mkv2bag.cpp
+    src/ros1_export.cpp
+    src/ros1_input.cpp
+    src/ros2_export.cpp
+    src/ros2_input.cpp
 )
 target_include_directories(bag2mkv_core PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
@@ -54,6 +65,7 @@ target_compile_definitions(bag2mkv_core PUBLIC BAG2MKV_VERSION="${PROJECT_VERSIO
 target_link_libraries(bag2mkv_core PUBLIC
     lz4
     bz2
+    sqlite3
     "${K4A_ROOT}/lib/k4arecord.lib"
     "${K4A_ROOT}/lib/k4a.lib"
     bcrypt
@@ -97,4 +109,10 @@ if(BUILD_TESTING)
     add_test(NAME bag2mkv_help COMMAND $<TARGET_FILE:bag2mkv> --help)
     add_test(NAME bag2mkv_batch_help COMMAND $<TARGET_FILE:bag2mkv> batch --help)
     add_test(NAME bag2mkv_mkv2bag_help COMMAND $<TARGET_FILE:bag2mkv> mkv2bag --help)
+    add_test(NAME bag2mkv_ros1_help COMMAND $<TARGET_FILE:bag2mkv> ros1 --help)
+    add_test(NAME bag2mkv_ros1mkv_help COMMAND $<TARGET_FILE:bag2mkv> ros1mkv --help)
+    add_test(NAME bag2mkv_ros2_help COMMAND $<TARGET_FILE:bag2mkv> ros2 --help)
+    add_test(NAME bag2mkv_ros2mkv_help COMMAND $<TARGET_FILE:bag2mkv> ros2mkv --help)
+    add_test(NAME bag2mkv_mkv2ros1_help COMMAND $<TARGET_FILE:bag2mkv> mkv2ros1 --help)
+    add_test(NAME bag2mkv_mkv2ros2_help COMMAND $<TARGET_FILE:bag2mkv> mkv2ros2 --help)
 endif()

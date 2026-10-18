@@ -1,4 +1,4 @@
-# bag2mkv v0.4.3
+# bag2mkv v0.5.0
 
 把 Orbbec SDK 录制的 RGB-D `.bag` 无损转换成 Azure Kinect（K4A）兼容的 `.mkv`。
 提供 **命令行版** `bag2mkv.exe` 和 **Windows 原生 GUI** `bag2mkv-gui.exe`，两者共用同一个转换核心。
@@ -7,6 +7,7 @@
 - 深度：`mono16` 逐值保留，文件内为 K4A `b16g`（BE）；由 K4A writer 从 LE 转换。
 - 元数据：设备信息、stream profile、property、逐帧时间戳/帧号/metadata 写入 MKV attachment。
 - 验证：K4A playback 逐帧比对 BGRA 像素/深度值/时间戳，并校验原始 MJPEG 轨道的 SHA-256。
+- ROS：支持 Orbbec bag ↔ 标准 ROS1 bag / ROS2 sqlite3 bag；ROS1 输出带标准 index data，ROS2 使用 CDR `sensor_msgs` 和 `metadata.yaml`。
 
 > 默认输出约 **12.5 GB / 45 s**（BGRA 1080p 很大）。只需要 K4A 原码流、不要求旧播放器兼容时，用 `--color mjpg` 输出约 **1.2 GB**。
 
@@ -68,11 +69,17 @@ GUI 也支持命令行预填，方便脚本或“打开方式”：
 .\build\Release\bag2mkv.exe help convert
 .\build\Release\bag2mkv.exe help batch
 .\build\Release\bag2mkv.exe help mkv2bag
+.\build\Release\bag2mkv.exe help ros1
+.\build\Release\bag2mkv.exe help ros1mkv
+.\build\Release\bag2mkv.exe help ros2
+.\build\Release\bag2mkv.exe help ros2mkv
+.\build\Release\bag2mkv.exe help mkv2ros1
+.\build\Release\bag2mkv.exe help mkv2ros2
 .\build\Release\bag2mkv.exe help verify
 .\build\Release\bag2mkv.exe --version
 ```
 
-`convert --help` 包含全部选项、彩色模式、文件大小、标定说明、示例和退出码；`batch --help` 包含递归扫描、`--limit`、错误继续和输出命名规则；`mkv2bag --help` 包含反向转换的源轨道/manifest 规则。
+`convert --help` 包含全部选项、彩色模式、文件大小、标定说明、示例和退出码；`batch --help` 包含递归扫描、`--limit`、错误继续和输出命名规则；`mkv2bag --help` 包含反向转换的源轨道/manifest 规则。ROS 命令各有独立帮助。
 
 ### 常用命令
 
@@ -122,6 +129,35 @@ GUI 也支持命令行预填，方便脚本或“打开方式”：
 退出码：`0` 成功，`1` 转换/验证失败，`2` 用法错误，`3` 用户取消。
 
 转换开始前会按帧数/彩色模式估算输出大小并检查输出磁盘可用空间；空间不足会在写入前报错，不会先删除已有输出文件。
+
+## ROS1 / ROS2 双向转换
+
+ROS 路径与 K4A MKV 路径并列，Windows CLI 可用；GUI 目前仍只做 Orbbec bag ↔ MKV。
+
+```powershell
+# Orbbec bag -> 标准 ROS1 bag
+.\build\Release\bag2mkv.exe ros1 capture.bag -o capture_ros1.bag --force
+
+# 标准 ROS1 bag -> K4A MKV
+.\build\Release\bag2mkv.exe ros1mkv capture_ros1.bag -o capture.mkv --force
+
+# Orbbec bag -> ROS2 sqlite3 bag 目录
+.\build\Release\bag2mkv.exe ros2 capture.bag -o capture_ros2 --force
+
+# ROS2 sqlite3 bag 目录 -> K4A MKV
+.\build\Release\bag2mkv.exe ros2mkv capture_ros2 -o capture.mkv --force
+
+# K4A MKV -> ROS1 / ROS2
+.\build\Release\bag2mkv.exe mkv2ros1 capture.mkv -o capture_ros1.bag --force
+.\build\Release\bag2mkv.exe mkv2ros2 capture.mkv -o capture_ros2 --force
+```
+
+- ROS1 输出：标准 `#ROSBAG V2.0`，带 connection、index data、chunk-info；彩色 MJPEG 写为 `sensor_msgs/CompressedImage`，深度/IR 写为 `Image`（`16UC1`）。
+- ROS2 输出：`metadata.yaml` + `bag_0.db3`（SQLite3），消息使用 CDR；topic/type 与 ROS1 路径一致。
+- ROS1/ROS2 输入：支持 `sensor_msgs/Image`（`rgb8`、`bgr8`、`bgra8`、`mono8`、`16UC1`/`mono16`）和 `CompressedImage`（JPEG）。
+- K4A 只接受固定分辨率：彩色 1920×1080、1280×720、3840×2160、2560×1440、2048×1536、4096×3072；深度/IR 640×576、320×288、512×512、1024×1024。其他尺寸会明确拒绝，不会静默缩放。
+- `mkv2ros1` / `mkv2ros2` 目前先经过一个临时 Orbbec bag（复用 `mkv2bag` + 导出器），功能正确但会多一次磁盘 I/O；后续可改为直接 K4A playback 导出。
+- ROS2 的 SQLite 源码已 vendor 到 `third_party/sqlite/`（public domain），Windows 构建不需要系统 SQLite。
 
 ## MKV 转回 bag（mkv2bag）
 
@@ -194,4 +230,5 @@ kinect-analyzer 的 `ImageProcessor::convertK4AColorToQImage()` / `SyncPlaybackM
 
 `third_party/lz4/` 使用其自身的 BSD 2-Clause License，见 [third_party/lz4/LICENSE](third_party/lz4/LICENSE)。
 `third_party/bzip2/` 使用其自身的 BSD-like License，见 [third_party/bzip2/COPYING](third_party/bzip2/COPYING)。
+`third_party/sqlite/` 是 SQLite 3.46.1 amalgamation，public domain，见 [third_party/sqlite/README.txt](third_party/sqlite/README.txt)。
 `azurekinectsdk/` 是 Orbbec 提供的预编译运行时，遵循其自带许可/条款。
