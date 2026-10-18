@@ -1,0 +1,22 @@
+# Build and generated artifacts
+build/
+out/
+_scratch/
+*.tmp
+*.log
+*.pdb
+*.ilk
+*.obj
+*.user
+.vs/
+CMakeUserPresets.json
+
+# Large/raw inputs and generated recordings (never commit)
+*.bag
+*.mkv
+
+# Upstream SDKs only used as references during development.
+# azurekinectsdk/ is intentionally NOT ignored: it is the prebuilt K4A/Orbbec
+# runtime required by CMake and is part of the build.
+OrbbecSDK_v2-main/
+azurekinectbodytrackingsdk/
