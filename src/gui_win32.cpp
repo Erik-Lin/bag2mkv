@@ -1466,17 +1466,17 @@ void StudioApp::refresh_hover(int x, int y) {
 }
 
 void StudioApp::on_click(int x, int y) {
-    if (view_ == View::About) {
-        if (point_in(link_rect_, x, y)) {
-            ShellExecuteW(hwnd_, L"open", L"https://github.com/Erik-Lin/bag2mkv", nullptr, nullptr, SW_SHOWNORMAL);
-        }
-        return;
-    }
     for (int i = 0; i < 3; ++i) {
         if (point_in(nav_rects_[i], x, y)) {
             set_view(static_cast<View>(i));
             return;
         }
+    }
+    if (view_ == View::About) {
+        if (point_in(link_rect_, x, y)) {
+            ShellExecuteW(hwnd_, L"open", L"https://github.com/Erik-Lin/bag2mkv", nullptr, nullptr, SW_SHOWNORMAL);
+        }
+        return;
     }
     const std::array<OutputKind, 4> kinds{OutputKind::K4aMkv, OutputKind::Ros1Bag, OutputKind::Ros2Bag,
                                          OutputKind::OrbbecBag};
