@@ -1,5 +1,7 @@
 #include "jpeg_decoder.hpp"
 
+#ifdef _WIN32
+
 #include <wincodec.h>
 #include <objbase.h>
 
@@ -87,3 +89,53 @@ void JpegDecoder::decode(const uint8_t *jpeg, size_t size, std::vector<uint8_t> 
 }
 
 }  // namespace bag2mkv
+
+#else
+
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_FAILURE_USERMSG
+#include "stb_image.h"
+
+#include <limits>
+#include <stdexcept>
+#include <string>
+
+namespace bag2mkv {
+
+JpegDecoder::JpegDecoder() = default;
+JpegDecoder::~JpegDecoder() = default;
+
+void JpegDecoder::decode(const uint8_t *jpeg, size_t size, std::vector<uint8_t> &bgra, uint32_t &width,
+                         uint32_t &height) {
+    if (jpeg == nullptr || size == 0) {
+        throw std::runtime_error("JPEG decoder: empty input");
+    }
+    if (size > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        throw std::runtime_error("JPEG decoder: input is too large");
+    }
+    int w = 0;
+    int h = 0;
+    int channels = 0;
+    unsigned char *rgb = stbi_load_from_memory(jpeg, static_cast<int>(size), &w, &h, &channels, 3);
+    if (rgb == nullptr) {
+        throw std::runtime_error(std::string("JPEG decoder: ") + stbi_failure_reason());
+    }
+    if (w <= 0 || h <= 0 || w > 16384 || h > 16384) {
+        stbi_image_free(rgb);
+        throw std::runtime_error("JPEG decoder: invalid dimensions");
+    }
+    width = static_cast<uint32_t>(w);
+    height = static_cast<uint32_t>(h);
+    bgra.resize(static_cast<size_t>(width) * height * 4);
+    for (size_t i = 0; i < static_cast<size_t>(width) * height; ++i) {
+        bgra[i * 4 + 0] = rgb[i * 3 + 2];
+        bgra[i * 4 + 1] = rgb[i * 3 + 1];
+        bgra[i * 4 + 2] = rgb[i * 3 + 0];
+        bgra[i * 4 + 3] = 255;
+    }
+    stbi_image_free(rgb);
+}
+
+}  // namespace bag2mkv
+
+#endif

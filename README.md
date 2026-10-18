@@ -10,17 +10,17 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.5.0-2ea44f">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.6.0-2ea44f">
   <img alt="Windows" src="https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078D4">
-  <img alt="Linux" src="https://img.shields.io/badge/Linux-CLI%20roadmap-lightgrey">
+  <img alt="Linux" src="https://img.shields.io/badge/Linux-x86__64%20CLI-2ea44f">
   <img alt="C++17" src="https://img.shields.io/badge/C%2B%2B-17-00599C">
   <img alt="CMake" src="https://img.shields.io/badge/CMake-3.16%2B-064F8C">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-yellow">
   <img alt="ROS" src="https://img.shields.io/badge/ROS-1%20%7C%202-22314E">
 </p>
 
-> **v0.5.0** — Windows x64 CLI + GUI. ROS 1/2 conversion is available from the CLI.
-> Linux CLI support is planned; the current release is Windows-only.
+> **v0.6.0** — Windows x64 CLI + GUI; Linux x86_64 CLI. ROS 1/2 conversion is available from the CLI on both platforms.
+> The GUI is Windows-only.
 
 `bag2mkv` is a focused, verifiable conversion toolkit for RGB-D recordings. It does **not** re-encode color, filter depth, align streams, or pretend a generic video muxer is a Kinect recorder. It preserves what the source actually contains, and gives you a way to prove it.
 
@@ -114,6 +114,17 @@ Download the latest Windows x64 package from the [Releases](https://github.com/E
 
 The package is self-contained apart from the bundled K4A/Orbbec runtime DLLs; VC++ runtime DLLs are included.
 
+### Linux release
+
+Download the Linux x86_64 CLI package and run:
+
+```bash
+tar -xzf bag2mkv-v0.6.0-linux-x86_64-cli.tar.gz
+./bag2mkv-v0.6.0-linux-x86_64-cli/bin/bag2mkv --version
+```
+
+Requirements: x86_64 Linux with glibc 2.28+ and libstdc++6. The package bundles the Orbbec K4A Wrapper libraries and uses an `LD_LIBRARY_PATH` wrapper, so no system K4A SDK installation is needed.
+
 ### Build from source
 
 Requirements:
@@ -135,6 +146,31 @@ Outputs:
 build\Release\bag2mkv.exe
 build\Release\bag2mkv-gui.exe
 ```
+
+### Linux build from source
+
+Requirements:
+
+- x86_64 Linux, CMake 3.16+, GCC 9+ or Clang 10+
+- Orbbec K4A Wrapper for Linux (headers + `.so` files)
+
+```bash
+# Extract the Orbbec Linux SDK, e.g. to ./k4a-wrapper
+cmake -S . -B build-linux \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_GUI=OFF \
+  -DK4A_ROOT="$PWD/k4a-wrapper"
+cmake --build build-linux --parallel
+ctest --test-dir build-linux --output-on-failure
+```
+
+Output:
+
+```text
+build-linux/bag2mkv
+```
+
+The Linux build excludes `bag2mkv-gui`. It uses `stb_image` for JPEG decoding and an internal SHA-256 implementation, so there is no WIC/BCrypt dependency. Runtime still requires the Orbbec K4A Wrapper `.so` files; the release package bundles them.
 
 ### First conversions
 
@@ -287,7 +323,7 @@ Input directory  +  Output directory  +  Start
 - Keeps going when one file fails; progress, cancellation, and log are in the window.
 - Supports overwrite confirmation, optional post-conversion verification, and color mode.
 
-The GUI currently covers **Orbbec bag ↔ K4A MKV** only. ROS conversion is CLI-only in v0.5.0.
+The GUI currently covers **Orbbec bag ↔ K4A MKV** only. ROS conversion is CLI-only in v0.6.0.
 
 ```powershell
 .\build\Release\bag2mkv-gui.exe
@@ -389,17 +425,19 @@ Current test coverage includes 10 CTest cases, synthetic Orbbec/ROS fixtures, an
 
 ### Known limitations
 
-- **Windows only for now.** The CLI, K4A writer, WIC JPEG decoder, BCrypt SHA-256, and Win32 GUI are Windows-specific. A Linux CLI port needs libjpeg/OpenSSL (or portable replacements), Linux K4A/Orbbec `.so` files, and a non-Win32 build path.
-- **GUI does not expose ROS.** ROS 1/2 is CLI-only in v0.5.0.
+- **The GUI is Windows-only.** The CLI, including ROS1/ROS2 conversion, is available on Windows and Linux.
+- **Linux is CLI-only.** There is no Linux GUI; the native Win32 GUI is not portable.
+- **GUI does not expose ROS.** ROS 1/2 is CLI-only in v0.6.0.
 - **No arbitrary resolution mode.** K4A's fixed modes are enforced; no implicit resize/crop.
 - **No CameraInfo → K4A calibration synthesis yet.** ROS-sourced MKVs may lack calibration.
 - **No IMU stream yet.** The sample device used during development had no IMU recording.
 - **ROS2 sqlite3 only.** MCAP storage is not implemented.
 - **`mkv2ros1/2` uses a temporary Orbbec bag.** Correct, but slower than a direct K4A playback export.
+- **Linux runtime requirements.** The prebuilt Linux CLI targets x86_64 with glibc 2.28+ and libstdc++6; the K4A/Orbbec libraries are bundled.
 
 ### Roadmap
 
-- [ ] Linux CLI build and packaging (Ubuntu 20.04/22.04-compatible).
+- [ ] Native Linux packages (`.deb`, AppImage) and broader distro testing.
 - [ ] Direct K4A playback → ROS1/ROS2 export without the temporary bag.
 - [ ] GUI support for ROS1/ROS2 directions.
 - [ ] Optional explicit `--allow-resize` mode for non-K4A ROS resolutions, clearly marked lossy.
@@ -437,7 +475,7 @@ Yes. Orbbec chunks with `compression=bz2` are decompressed with the vendored bzi
 
 ### Can I run it on Linux?
 
-Not yet. Linux CLI is the next platform milestone; the Windows release is the only prebuilt package in v0.5.0.
+Yes, the CLI is supported on x86_64 Linux. Use the Linux CLI package or build with `-DBUILD_GUI=OFF`; the GUI remains Windows-only. The prebuilt package requires glibc 2.28+ and libstdc++6 and bundles the Orbbec K4A libraries.
 
 ---
 
@@ -450,7 +488,7 @@ Contributions are welcome: bug reports, real-device recordings (with permission)
 - Keep test recordings out of issues and pull requests; provide a minimal reproduction and logs instead.
 - One focused change per pull request.
 
-Good first areas: Linux CLI port, ROS CameraInfo/calibration, direct MKV → ROS export, additional K4A player compatibility tests.
+Good first areas: Linux packaging/distro testing, ROS CameraInfo/calibration, direct MKV → ROS export, additional K4A player compatibility tests.
 
 ---
 
@@ -462,6 +500,7 @@ MIT License. Copyright © 林山力.
 - LZ4: [third_party/lz4/LICENSE](third_party/lz4/LICENSE)
 - bzip2: [third_party/bzip2/COPYING](third_party/bzip2/COPYING)
 - SQLite: [third_party/sqlite/README.txt](third_party/sqlite/README.txt)
+- stb_image: [third_party/stb/LICENSE.txt](third_party/stb/LICENSE.txt)
 - Orbbec K4A runtime: follow the upstream Orbbec SDK license/terms.
 
 ---

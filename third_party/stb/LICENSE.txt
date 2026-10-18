@@ -1,0 +1,9 @@
+stb_image - v2.30 - public domain image loader
+https://github.com/nothings/stb
+
+This software is available under two licenses:
+
+1. MIT License (see the header of stb_image.h)
+2. Public Domain (Unlicense)
+
+The full text and choice of license are in the header of stb_image.h.

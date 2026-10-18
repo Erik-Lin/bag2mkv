@@ -1,0 +1,78 @@
+name: Linux CLI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ unzip curl
+
+      - name: Download Orbbec K4A Wrapper (Linux)
+        run: |
+          curl -L --fail --retry 3 \
+            -o /tmp/k4a-wrapper.zip \
+            https://github.com/orbbec/OrbbecSDK-K4A-Wrapper/releases/download/v2.0.12/OrbbecSDK_K4A_Wrapper_v2.0.12_linux_202605090945.zip
+          rm -rf /tmp/k4a-wrapper
+          mkdir -p /tmp/k4a-wrapper
+          unzip -q /tmp/k4a-wrapper.zip -d /tmp/k4a-wrapper
+          K4A_ROOT=$(dirname "$(dirname "$(dirname "$(find /tmp/k4a-wrapper -path '*/include/k4a/k4a.h' | head -n1)")")")")
+          echo "K4A_ROOT=$K4A_ROOT" >> "$GITHUB_ENV"
+
+      - name: Configure
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_GUI=OFF \
+            -DK4A_ROOT="$K4A_ROOT"
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        env:
+          LD_LIBRARY_PATH: ${{ env.K4A_ROOT }}/lib
+        run: |
+          ./build/bag2mkv --version
+          ./build/bag2mkv --self-test
+          ctest --test-dir build --output-on-failure
+
+      - name: Package CLI
+        run: |
+          set -eux
+          NAME=bag2mkv-$(./build/bag2mkv --version | awk '{print $2}')-linux-x86_64-cli
+          mkdir -p "dist/$NAME/bin" "dist/$NAME/libexec" "dist/$NAME/lib" \
+                   "dist/$NAME/share/doc/bag2mkv" "dist/$NAME/share/licenses"
+          cp build/bag2mkv "dist/$NAME/libexec/bag2mkv"
+          cp "$K4A_ROOT"/lib/libk4a.so.1.4.1 "dist/$NAME/lib/libk4a.so.1.4"
+          cp "$K4A_ROOT"/lib/libk4arecord.so.1.4.0 "dist/$NAME/lib/libk4arecord.so.1.4"
+          cp "$K4A_ROOT"/lib/libOrbbecSDK.so.2.5.5 "dist/$NAME/lib/libOrbbecSDK.so.2"
+          cp "$K4A_ROOT"/lib/libdepthengine.so.2.0 "dist/$NAME/lib/libdepthengine.so.2.0" || true
+          cp "$K4A_ROOT"/lib/OrbbecSDKConfig.xml "dist/$NAME/lib/OrbbecSDKConfig.xml" || true
+          cp README.md README.zh-CN.md CHANGELOG.md LICENSE "dist/$NAME/share/doc/bag2mkv/"
+          cp third_party/lz4/LICENSE third_party/bzip2/COPYING third_party/sqlite/README.txt \
+             "dist/$NAME/share/licenses/"
+          cat > "dist/$NAME/bin/bag2mkv" <<'EOF'
+          #!/bin/sh
+          set -eu
+          here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+          root=$(CDPATH= cd -- "$here/.." && pwd)
+          export LD_LIBRARY_PATH="$root/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          exec "$root/libexec/bag2mkv" "$@"
+          EOF
+          chmod +x "dist/$NAME/bin/bag2mkv" "dist/$NAME/libexec/bag2mkv"
+          tar -C dist -czf "$NAME.tar.gz" "$NAME"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-cli
+          path: bag2mkv-*-linux-x86_64-cli.tar.gz

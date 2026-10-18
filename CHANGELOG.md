@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.0
+
+- 新增 Linux x86_64 CLI 支持：CMake 在非 Windows 平台构建 `bag2mkv`，不构建 Win32 GUI。
+- Linux JPEG 解码改用 vendored `stb_image`；SHA-256 使用内置实现，移除 WIC/BCrypt 依赖。
+- Linux 构建/运行使用 Orbbec K4A Wrapper Linux SDK；发布包附带 `libk4a`、`libk4arecord`、`libOrbbecSDK`、`libdepthengine` 和启动 wrapper。
+- README 更新为 Windows CLI+GUI、Linux CLI；新增 Linux 构建、运行要求和限制说明。
+- 新增 GitHub Actions Linux CLI 构建/测试工作流。
+- Windows 功能、格式和 GUI 行为保持不变。
+
 ## 0.5.0
 
 - 新增标准 ROS1 bag 输出 `ros1`：带 connection/index data/chunk-info，彩色 MJPEG 保留为 `sensor_msgs/CompressedImage`，深度/IR 为 `Image` (`16UC1`)。

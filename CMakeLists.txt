@@ -1,11 +1,17 @@
 cmake_minimum_required(VERSION 3.16)
-project(bag2mkv VERSION 0.5.0 LANGUAGES C CXX)
+project(bag2mkv VERSION 0.6.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-set(K4A_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/azurekinectsdk")
+if(WIN32)
+    set(K4A_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/azurekinectsdk" CACHE PATH "Orbbec K4A Wrapper SDK root")
+    option(BUILD_GUI "Build the Windows GUI (bag2mkv-gui)" ON)
+else()
+    set(K4A_ROOT "" CACHE PATH "Optional K4A SDK root (with include/ and lib/)")
+    option(BUILD_GUI "Build the Windows GUI (bag2mkv-gui)" OFF)
+endif()
 
 add_library(lz4 STATIC
     third_party/lz4/lz4.c
@@ -59,49 +65,96 @@ add_library(bag2mkv_core STATIC
 )
 target_include_directories(bag2mkv_core PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
-    "${K4A_ROOT}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb"
 )
 target_compile_definitions(bag2mkv_core PUBLIC BAG2MKV_VERSION="${PROJECT_VERSION}")
-target_link_libraries(bag2mkv_core PUBLIC
-    lz4
-    bz2
-    sqlite3
-    "${K4A_ROOT}/lib/k4arecord.lib"
-    "${K4A_ROOT}/lib/k4a.lib"
-    bcrypt
-    windowscodecs
-    ole32
-)
+target_link_libraries(bag2mkv_core PUBLIC lz4 bz2 sqlite3)
+
+if(WIN32)
+    target_include_directories(bag2mkv_core PUBLIC "${K4A_ROOT}/include")
+    target_link_libraries(bag2mkv_core PUBLIC
+        "${K4A_ROOT}/lib/k4arecord.lib"
+        "${K4A_ROOT}/lib/k4a.lib"
+        bcrypt
+        windowscodecs
+        ole32
+    )
+else()
+    find_path(K4A_INCLUDE_DIR
+        NAMES k4a/k4a.h
+        HINTS "${K4A_ROOT}/include" /usr/include /usr/local/include
+    )
+    find_library(K4A_LIBRARY
+        NAMES k4a
+        HINTS "${K4A_ROOT}/lib" /usr/lib/x86_64-linux-gnu /usr/local/lib
+    )
+    find_library(K4A_RECORD_LIBRARY
+        NAMES k4arecord
+        HINTS "${K4A_ROOT}/lib" /usr/lib/x86_64-linux-gnu /usr/local/lib
+    )
+    if(NOT K4A_INCLUDE_DIR OR NOT K4A_LIBRARY OR NOT K4A_RECORD_LIBRARY)
+        message(FATAL_ERROR
+            "Linux K4A SDK not found. Set -DK4A_ROOT=/path/to/OrbbecSDK-K4A-Wrapper "
+            "with include/ and lib/ directories.")
+    endif()
+    find_package(Threads REQUIRED)
+    target_include_directories(bag2mkv_core PUBLIC "${K4A_INCLUDE_DIR}")
+    target_link_libraries(bag2mkv_core PUBLIC
+        "${K4A_RECORD_LIBRARY}"
+        "${K4A_LIBRARY}"
+        Threads::Threads
+        ${CMAKE_DL_LIBS}
+    )
+endif()
+
 if(MSVC)
     target_compile_options(bag2mkv_core PRIVATE /W4 /utf-8)
+else()
+    target_compile_options(bag2mkv_core PRIVATE -Wall -Wextra)
 endif()
 
 add_executable(bag2mkv src/main.cpp)
 target_link_libraries(bag2mkv PRIVATE bag2mkv_core)
+if(NOT WIN32)
+    set_target_properties(bag2mkv PROPERTIES INSTALL_RPATH "$ORIGIN/../lib")
+endif()
 if(MSVC)
     target_compile_options(bag2mkv PRIVATE /W4 /utf-8)
+else()
+    target_compile_options(bag2mkv PRIVATE -Wall -Wextra)
 endif()
 
-add_executable(bag2mkv-gui WIN32 src/gui_win32.cpp)
-target_link_libraries(bag2mkv-gui PRIVATE bag2mkv_core comctl32 comdlg32 shell32)
-set_target_properties(bag2mkv-gui PROPERTIES WIN32_EXECUTABLE TRUE)
-if(MSVC)
-    target_compile_options(bag2mkv-gui PRIVATE /W4 /utf-8)
-    target_compile_definitions(bag2mkv-gui PRIVATE UNICODE _UNICODE)
-endif()
-
-function(copy_k4a_runtime target)
-    file(GLOB K4A_RUNTIME_DLLS "${K4A_ROOT}/bin/*.dll")
-    if(K4A_RUNTIME_DLLS)
-        add_custom_command(TARGET ${target} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${K4A_RUNTIME_DLLS} "$<TARGET_FILE_DIR:${target}>"
-            COMMENT "Copying K4A runtime DLLs"
-        )
+if(WIN32 AND BUILD_GUI)
+    add_executable(bag2mkv-gui WIN32 src/gui_win32.cpp)
+    target_link_libraries(bag2mkv-gui PRIVATE bag2mkv_core comctl32 comdlg32 shell32)
+    set_target_properties(bag2mkv-gui PROPERTIES WIN32_EXECUTABLE TRUE)
+    if(MSVC)
+        target_compile_options(bag2mkv-gui PRIVATE /W4 /utf-8)
+        target_compile_definitions(bag2mkv-gui PRIVATE UNICODE _UNICODE)
     endif()
-endfunction()
+endif()
 
-copy_k4a_runtime(bag2mkv)
-copy_k4a_runtime(bag2mkv-gui)
+if(WIN32)
+    function(copy_k4a_runtime target)
+        file(GLOB K4A_RUNTIME_DLLS "${K4A_ROOT}/bin/*.dll")
+        if(K4A_RUNTIME_DLLS)
+            add_custom_command(TARGET ${target} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different ${K4A_RUNTIME_DLLS} "$<TARGET_FILE_DIR:${target}>"
+                COMMENT "Copying K4A runtime DLLs"
+            )
+        endif()
+    endfunction()
+
+    copy_k4a_runtime(bag2mkv)
+    if(TARGET bag2mkv-gui)
+        copy_k4a_runtime(bag2mkv-gui)
+    endif()
+endif()
+
+install(TARGETS bag2mkv RUNTIME DESTINATION bin)
+if(WIN32 AND BUILD_GUI)
+    install(TARGETS bag2mkv-gui RUNTIME DESTINATION bin)
+endif()
 
 include(CTest)
 if(BUILD_TESTING)

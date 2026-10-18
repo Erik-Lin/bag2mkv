@@ -10,17 +10,17 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.5.0-2ea44f">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.6.0-2ea44f">
   <img alt="Windows" src="https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078D4">
-  <img alt="Linux" src="https://img.shields.io/badge/Linux-CLI%20roadmap-lightgrey">
+  <img alt="Linux" src="https://img.shields.io/badge/Linux-x86__64%20CLI-2ea44f">
   <img alt="C++17" src="https://img.shields.io/badge/C%2B%2B-17-00599C">
   <img alt="CMake" src="https://img.shields.io/badge/CMake-3.16%2B-064F8C">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-yellow">
   <img alt="ROS" src="https://img.shields.io/badge/ROS-1%20%7C%202-22314E">
 </p>
 
-> **v0.5.0** — Windows x64 提供 CLI + GUI；ROS 1/2 转换目前通过 CLI 使用。
-> Linux CLI 支持已列入下一步计划，当前发布包仅支持 Windows。
+> **v0.6.0** — Windows x64 提供 CLI + GUI；Linux x86_64 提供 CLI。ROS 1/2 转换在两个平台的 CLI 中可用。
+> GUI 仅支持 Windows。
 
 `bag2mkv` 是一个专注、可验证的 RGB-D 录制转换工具。它不会重新编码彩色、不会滤波深度、不会强行对齐数据流，也不会把普通视频封装伪装成 Kinect 录制。它尽可能保留源数据，并提供一套可以独立验证结果的方法。
 
@@ -114,6 +114,17 @@ Azure Kinect 录制（`.mkv`）和 Orbbec ROSBAG（`.bag`）都包含同步的�
 
 发布包已包含 K4A/Orbbec 运行库和 VC++ 运行库，不需要额外安装 Visual Studio。
 
+### Linux 发布包
+
+下载 Linux x86_64 CLI 包后运行：
+
+```bash
+tar -xzf bag2mkv-v0.6.0-linux-x86_64-cli.tar.gz
+./bag2mkv-v0.6.0-linux-x86_64-cli/bin/bag2mkv --version
+```
+
+要求：x86_64 Linux、glibc 2.28+、libstdc++6。包内已带 Orbbec K4A Wrapper 动态库，并通过 wrapper 设置 `LD_LIBRARY_PATH`，不需要系统安装 K4A SDK。
+
 ### 从源码构建
 
 依赖：
@@ -135,6 +146,31 @@ ctest --test-dir build -C Release --output-on-failure
 build\Release\bag2mkv.exe
 build\Release\bag2mkv-gui.exe
 ```
+
+### Linux 从源码构建
+
+依赖：
+
+- x86_64 Linux、CMake 3.16+、GCC 9+ 或 Clang 10+
+- Linux 版 Orbbec K4A Wrapper（头文件 + `.so`）
+
+```bash
+# 将 Linux SDK 解压到 ./k4a-wrapper
+cmake -S . -B build-linux \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_GUI=OFF \
+  -DK4A_ROOT="$PWD/k4a-wrapper"
+cmake --build build-linux --parallel
+ctest --test-dir build-linux --output-on-failure
+```
+
+输出：
+
+```text
+build-linux/bag2mkv
+```
+
+Linux 构建不包含 `bag2mkv-gui`。JPEG 解码使用 `stb_image`，SHA-256 使用内置实现，因此不依赖 WIC/BCrypt；运行时仍需要 Orbbec K4A Wrapper 的 `.so`，发布包已自动附带。
 
 ### 第一次转换
 
@@ -287,7 +323,7 @@ K4A 只支持以下模式：
 - 单个文件失败不会中断其余文件；进度、取消、日志都在窗口内。
 - 支持覆盖确认、转换后自动验证、彩色模式。
 
-GUI 目前只覆盖 **Orbbec bag ↔ K4A MKV**；ROS 转换在 v0.5.0 中仅 CLI 可用。
+GUI 目前只覆盖 **Orbbec bag ↔ K4A MKV**；ROS 转换在 v0.6.0 中仅 CLI 可用。
 
 ```powershell
 .\build\Release\bag2mkv-gui.exe
@@ -389,17 +425,19 @@ ctest --test-dir build -C Release --output-on-failure
 
 ### 已知限制
 
-- **目前只有 Windows 发布包。** CLI、K4A writer、WIC JPEG 解码、BCrypt SHA-256 和 Win32 GUI 都依赖 Windows。Linux CLI 需要替换这些依赖、接入 Linux K4A/Orbbec `.so`，并增加非 Win32 构建路径。
-- **GUI 不暴露 ROS。** v0.5.0 中 ROS 1/2 仅 CLI。
+- **GUI 仅支持 Windows。** CLI（包括 ROS1/ROS2 转换）在 Windows 和 Linux 上都可用。
+- **Linux 只有 CLI。** 没有 Linux GUI；原生 Win32 GUI 不跨平台。
+- **GUI 不暴露 ROS。** v0.6.0 中 ROS 1/2 仅 CLI。
 - **没有任意分辨率模式。** K4A 固定模式是硬约束，不做隐式 resize/crop。
 - **暂不做 CameraInfo → K4A 标定合成。** ROS 来源的 MKV 可能缺少标定。
 - **暂不支持 IMU 流。**
 - **ROS2 仅支持 sqlite3。** 暂不支持 MCAP。
 - **`mkv2ros1/2` 使用临时 Orbbec bag。** 结果正确，但比直接 K4A playback 导出慢。
+- **Linux 运行依赖。** 预编译 Linux CLI 面向 x86_64、glibc 2.28+、libstdc++6；K4A/Orbbec 库已随包提供。
 
 ### 路线图
 
-- [ ] Linux CLI 构建与打包（兼容 Ubuntu 20.04/22.04）。
+- [ ] 原生 Linux 包（`.deb`、AppImage）与更多发行版测试。
 - [ ] K4A playback 直接导出 ROS1/ROS2，去掉临时 bag。
 - [ ] GUI 增加 ROS1/ROS2 方向。
 - [ ] 可选的显式 `--allow-resize`，用于非 K4A 分辨率的 ROS 输入，并明确标记有损。
@@ -437,7 +475,7 @@ BGRA 1080p 每帧彩色约 8.3 MB，再加深度；45 秒录制超过 12 GB 很�
 
 ### 能在 Linux 上运行吗？
 
-暂时不能。Linux CLI 是下一个平台目标；v0.5.0 只提供 Windows 预编译包。
+可以，CLI 支持 x86_64 Linux。使用 Linux CLI 包，或在 Linux 上以 `-DBUILD_GUI=OFF` 构建；GUI 仍然只支持 Windows。预编译包要求 glibc 2.28+、libstdc++6，并已附带 Orbbec K4A 库。
 
 ---
 
@@ -450,7 +488,7 @@ BGRA 1080p 每帧彩色约 8.3 MB，再加深度；45 秒录制超过 12 GB 很�
 - 不要在 issue/PR 中上传测试录制；请提供最小复现和日志。
 - 每个 PR 只做一件事。
 
-适合入手的方向：Linux CLI 移植、ROS CameraInfo/标定、K4A → ROS 直接导出、更多播放器兼容性测试。
+适合入手的方向：Linux 打包/发行版测试、ROS CameraInfo/标定、K4A → ROS 直接导出、更多播放器兼容性测试。
 
 ---
 
@@ -462,6 +500,7 @@ MIT License，版权归 **林山力** 所有。
 - LZ4：[third_party/lz4/LICENSE](third_party/lz4/LICENSE)
 - bzip2：[third_party/bzip2/COPYING](third_party/bzip2/COPYING)
 - SQLite：[third_party/sqlite/README.txt](third_party/sqlite/README.txt)
+- stb_image：[third_party/stb/LICENSE.txt](third_party/stb/LICENSE.txt)
 - Orbbec K4A 运行时：遵循上游 Orbbec SDK 的许可/条款。
 
 ---
