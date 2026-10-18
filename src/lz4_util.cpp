@@ -60,4 +60,18 @@ std::vector<uint8_t> lz4_decompress(const std::vector<uint8_t> &src) {
     return out;
 }
 
+std::vector<uint8_t> lz4_compress(const std::vector<uint8_t> &src) {
+    if (src.empty()) {
+        throw std::runtime_error("cannot compress an empty LZ4 chunk");
+    }
+    const size_t bound = LZ4F_compressFrameBound(src.size(), nullptr);
+    std::vector<uint8_t> out(bound);
+    const size_t written = LZ4F_compressFrame(out.data(), out.size(), src.data(), src.size(), nullptr);
+    if (LZ4F_isError(written)) {
+        throw std::runtime_error(std::string("LZ4F_compressFrame failed: ") + LZ4F_getErrorName(written));
+    }
+    out.resize(written);
+    return out;
+}
+
 }  // namespace bag2mkv

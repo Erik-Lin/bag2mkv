@@ -61,6 +61,36 @@ std::string base64_encode(const uint8_t *data, size_t size) {
     return out;
 }
 
+std::vector<uint8_t> base64_decode(const std::string &text) {
+    auto value = [](char c) -> int {
+        if (c >= 'A' && c <= 'Z') return c - 'A';
+        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+        if (c >= '0' && c <= '9') return c - '0' + 52;
+        if (c == '+') return 62;
+        if (c == '/') return 63;
+        return -1;
+    };
+    std::vector<uint8_t> out;
+    out.reserve(text.size() * 3 / 4);
+    uint32_t accumulator = 0;
+    int bits = 0;
+    for (char c : text) {
+        if (c == '=') break;
+        int v = value(c);
+        if (v < 0) {
+            if (std::isspace(static_cast<unsigned char>(c))) continue;
+            throw std::runtime_error("invalid base64 input");
+        }
+        accumulator = (accumulator << 6) | uint32_t(v);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back(static_cast<uint8_t>((accumulator >> bits) & 0xFF));
+        }
+    }
+    return out;
+}
+
 std::string to_hex(const uint8_t *data, size_t size) {
     static const char *kHex = "0123456789abcdef";
     std::string out;

@@ -42,6 +42,7 @@ struct ConvertSummary {
     uint64_t total_frames = 0;
     uint64_t color_frames = 0;
     uint64_t depth_frames = 0;
+    uint64_t ir_frames = 0;
     uint64_t first_timestamp_usec = 0;
     uint64_t last_timestamp_usec = 0;
     uint32_t color_width = 0;
@@ -56,6 +57,7 @@ struct VerifySummary {
     bool ok = false;
     uint64_t color_frames = 0;
     uint64_t depth_frames = 0;
+    uint64_t ir_frames = 0;
     uint64_t source_color_frames = 0;
     uint64_t recording_length_usec = 0;
     bool has_source_track = false;

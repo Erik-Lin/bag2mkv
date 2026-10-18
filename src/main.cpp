@@ -1,5 +1,6 @@
 #include "converter.hpp"
 #include "errors.hpp"
+#include "mkv2bag.hpp"
 #include "scan.hpp"
 
 #include <algorithm>
@@ -33,6 +34,8 @@ void print_overview() {
               << "  convert <input.bag> -o <out.mkv>  Convert a bag to a K4A-compatible MKV.\n"
               << "  batch <files-or-dir...> --output-dir <dir>\n"
               << "                                    Convert many bags, one MKV per input.\n"
+              << "  mkv2bag <input.mkv> [-o output.bag]\n"
+              << "                                    Rebuild an Orbbec ROSBAG V2.0 from a K4A MKV.\n"
               << "  verify  <input.bag> <out.mkv>     Independently verify frames, timestamps and calibration.\n"
               << "  help [command]                    Show this help, or detailed help for one command.\n"
               << "\n"
@@ -44,6 +47,7 @@ void print_overview() {
               << "  bag2mkv inspect capture.bag\n"
               << "  bag2mkv convert capture.bag -o capture.mkv --verify\n"
               << "  bag2mkv batch .\\recordings --output-dir .\\mkv --verify\n"
+              << "  bag2mkv mkv2bag capture.mkv -o capture.bag\n"
               << "  bag2mkv verify capture.bag capture.mkv\n"
               << "\n"
               << "DEFAULT OUTPUT\n"
@@ -144,6 +148,31 @@ void print_batch_help() {
               << "\n"
               << "EXIT CODES\n"
               << "  0 all conversions succeeded; 1 at least one failed; 2 usage error; 3 cancelled.\n";
+}
+
+void print_mkv2bag_help() {
+    std::cout << "bag2mkv mkv2bag " << version() << " - rebuild an Orbbec ROSBAG V2.0 from a K4A MKV\n"
+              << "\n"
+              << "USAGE\n"
+              << "  bag2mkv mkv2bag <input.mkv> [--output <output.bag>] [--force]\n"
+              << "\n"
+              << "The reverse path reads orbbec_manifest.json, orbbec_frames.jsonl,\n"
+              << "ORIGINAL_COLOR_MJPG and the K4A COLOR/DEPTH/IR tracks. It writes LZ4-compressed\n"
+              << "ROSBAG V2.0 chunks and a chunk-info index. When the source track is present the\n"
+              << "original JPEG bytes are copied unchanged; otherwise the current COLOR track is\n"
+              << "written as MJPG or raw BGRA.\n"
+              << "\n"
+              << "OPTIONS\n"
+              << "  -o, --output <file>   Output bag. Default: input file with .bag extension.\n"
+              << "  --force               Overwrite an existing output bag.\n"
+              << "  -h, --help            Show this help and exit.\n"
+              << "\n"
+              << "EXAMPLES\n"
+              << "  bag2mkv mkv2bag capture.mkv\n"
+              << "  bag2mkv mkv2bag capture.mkv -o capture_roundtrip.bag --force\n"
+              << "\n"
+              << "EXIT CODES\n"
+              << "  0 success; 1 conversion failure; 2 usage error.\n";
 }
 
 void print_inspect_help() {
@@ -484,6 +513,62 @@ int cmd_batch(int argc, char **argv) {
     return failed == 0 ? 0 : 1;
 }
 
+int cmd_mkv2bag(int argc, char **argv) {
+    for (int i = 2; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--help" || arg == "-h") {
+            print_mkv2bag_help();
+            return 0;
+        }
+    }
+
+    Mkv2BagOptions options;
+    for (int i = 2; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "-o" || arg == "--output") {
+            if (i + 1 >= argc) {
+                std::cerr << "error: missing value for " << arg << "\n";
+                return 2;
+            }
+            options.output_bag = argv[++i];
+        } else if (arg == "--force") {
+            options.force = true;
+        } else if (!arg.empty() && arg[0] == '-') {
+            std::cerr << "error: unknown option for mkv2bag: " << arg << "\n";
+            return 2;
+        } else if (options.input_mkv.empty()) {
+            options.input_mkv = arg;
+        } else {
+            std::cerr << "error: mkv2bag accepts one input MKV\n";
+            return 2;
+        }
+    }
+    if (options.input_mkv.empty()) {
+        std::cerr << "error: mkv2bag requires an input MKV\n\n";
+        print_mkv2bag_help();
+        return 2;
+    }
+    if (options.output_bag.empty()) {
+        std::filesystem::path output(options.input_mkv);
+        output.replace_extension(".bag");
+        options.output_bag = output.string();
+    }
+
+    try {
+        Mkv2BagSummary summary = mkv_to_bag(options, [](const std::string &line) {
+            std::cout << line << "\n";
+        });
+        std::cout << "mkv2bag: " << summary.color_frames << " color, " << summary.depth_frames
+                  << " depth, " << summary.ir_frames << " IR, " << summary.properties << " properties, "
+                  << summary.profiles << " profiles\n";
+        std::cout << "output: " << options.output_bag << " (" << summary.bag_size << " bytes)\n";
+        return 0;
+    } catch (const std::exception &e) {
+        std::cerr << "error: " << e.what() << "\n";
+        return 1;
+    }
+}
+
 int cmd_inspect(int argc, char **argv) {
     if (argc == 3 && (std::string(argv[2]) == "--help" || std::string(argv[2]) == "-h")) {
         print_inspect_help();
@@ -624,6 +709,8 @@ int main(int argc, char **argv) {
                     print_convert_help();
                 } else if (topic == "batch") {
                     print_batch_help();
+                } else if (topic == "mkv2bag") {
+                    print_mkv2bag_help();
                 } else if (topic == "inspect") {
                     print_inspect_help();
                 } else if (topic == "verify") {
@@ -658,6 +745,9 @@ int main(int argc, char **argv) {
         }
         if (command == "batch") {
             return cmd_batch(argc, argv);
+        }
+        if (command == "mkv2bag") {
+            return cmd_mkv2bag(argc, argv);
         }
         if (command == "verify") {
             return cmd_verify(argc, argv);

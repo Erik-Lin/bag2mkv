@@ -178,6 +178,34 @@ void K4aWriter::write_depth(const uint8_t *depth_le, size_t size, uint64_t times
     check(write_result, "k4a_record_write_capture(depth)");
 }
 
+void K4aWriter::write_ir(const uint8_t *ir_le, size_t size, uint64_t timestamp_usec) {
+    if (!config_.ir_enabled) {
+        throw std::runtime_error("IR frame encountered but IR output is disabled");
+    }
+    if (!header_written_) {
+        throw std::runtime_error("K4A header not written");
+    }
+    const size_t expected = static_cast<size_t>(config_.ir_width) * config_.ir_height * 2;
+    if (size != expected) {
+        throw std::runtime_error("unexpected IR buffer size: " + std::to_string(size) + " (expected " +
+                                 std::to_string(expected) + ")");
+    }
+    k4a_image_t image = nullptr;
+    check(k4a_image_create_from_buffer(K4A_IMAGE_FORMAT_IR16, config_.ir_width, config_.ir_height,
+                                       config_.ir_width * 2, const_cast<uint8_t *>(ir_le), size, nullptr, nullptr,
+                                       &image),
+          "k4a_image_create_from_buffer(ir)");
+    k4a_image_set_device_timestamp_usec(image, timestamp_usec);
+
+    k4a_capture_t capture = nullptr;
+    check(k4a_capture_create(&capture), "k4a_capture_create(ir)");
+    // Ownership is transferred to the capture.
+    k4a_capture_set_ir_image(capture, image);
+    k4a_result_t write_result = k4a_record_write_capture(record_, capture);
+    k4a_capture_release(capture);
+    check(write_result, "k4a_record_write_capture(ir)");
+}
+
 void K4aWriter::close() {
     if (closed_) {
         return;

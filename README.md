@@ -1,4 +1,4 @@
-# bag2mkv v0.3.1
+# bag2mkv v0.4.0
 
 把 Orbbec SDK 录制的 RGB-D `.bag` 无损转换成 Azure Kinect（K4A）兼容的 `.mkv`。
 提供 **命令行版** `bag2mkv.exe` 和 **Windows 原生 GUI** `bag2mkv-gui.exe`，两者共用同一个转换核心。
@@ -62,11 +62,12 @@ GUI 也支持命令行预填，方便“打开方式”或脚本冒烟测试：
 .\build\Release\bag2mkv.exe --help
 .\build\Release\bag2mkv.exe help convert
 .\build\Release\bag2mkv.exe help batch
+.\build\Release\bag2mkv.exe help mkv2bag
 .\build\Release\bag2mkv.exe help verify
 .\build\Release\bag2mkv.exe --version
 ```
 
-`convert --help` 包含全部选项、彩色模式、文件大小、标定说明、示例和退出码；`batch --help` 包含递归扫描、`--limit`、错误继续和输出命名规则。
+`convert --help` 包含全部选项、彩色模式、文件大小、标定说明、示例和退出码；`batch --help` 包含递归扫描、`--limit`、错误继续和输出命名规则；`mkv2bag --help` 包含反向转换的源轨道/manifest 规则。
 
 ### 常用命令
 
@@ -86,6 +87,9 @@ GUI 也支持命令行预填，方便“打开方式”或脚本冒烟测试：
 
 # 单独验证
 .\build\Release\bag2mkv.exe verify .\...bag .\out.mkv
+
+# 把 K4A MKV 转回 Orbbec bag
+.\build\Release\bag2mkv.exe mkv2bag .\out.mkv -o .\roundtrip.bag --force
 
 # 批量转换一个目录（默认递归扫描子目录，每个 bag 一个同名 mkv）
 .\build\Release\bag2mkv.exe batch .\recordings --output-dir .\mkv --verify
@@ -114,12 +118,28 @@ GUI 也支持命令行预填，方便“打开方式”或脚本冒烟测试：
 
 转换开始前会按帧数/彩色模式估算输出大小并检查输出磁盘可用空间；空间不足会在写入前报错，不会先删除已有输出文件。
 
+## MKV 转回 bag（mkv2bag）
+
+```powershell
+.\build\Release\bag2mkv.exe mkv2bag .\capture.mkv
+.\build\Release\bag2mkv.exe mkv2bag .\capture.mkv -o .\capture_roundtrip.bag --force
+```
+
+反向转换：
+
+- 优先读取 `orbbec_manifest.json` 和 `orbbec_frames.jsonl`，恢复设备、stream profile、47 条 property、帧号/时间戳/metadata。
+- 如果存在 `ORIGINAL_COLOR_MJPG` 自定义轨道，彩色 JPEG 字节原样复制，不重新编码。
+- 没有源轨道时：MJPG COLOR 轨原样复制；BGRA COLOR 轨写成 `bgra8` 原始数据。
+- 深度/IR 写成 `mono16` 原始数据；时间戳、header seq/frame_id、metadata、pixel_bit_size 尽量按 manifest 恢复。
+- 输出是 LZ4 压缩的 ROSBAG V2.0，带 connection/chunk-info；样本约 797 MB。
+- 对没有 manifest 的普通 K4A MKV，仍可从 tag 恢复设备序列号并转换图像，但没有原始 profile/property/标定来源信息。
+
 ## 输出结构（默认 BGRA）
 
 - `COLOR`：`BGRA_1080P`，1920×1080，8,294,400 B/帧。
 - `ORIGINAL_COLOR_MJPG`：自定义轨道，原始 JPEG 字节流逐帧保存（CodecID `V_MS/VFW/FOURCC`, `MJPG`）。
 - `DEPTH`：`NFOV_UNBINNED`，640×576，`b16g`。
-- `IR`：K4A writer 自动创建的空轨（本样本无 IR 数据）。
+- `IR`：有 IR 帧时写 `IR16`；样本无 IR，因此默认是空轨。
 - `calibration.json`：默认从 stream profile 合成；见下方限制。
 - `orbbec_manifest.json`：设备、流、属性、帧统计、彩色输出模式。
 - `orbbec_frames.jsonl`：逐帧时间戳、帧号、metadata、原始 JPEG payload SHA-256。
@@ -139,7 +159,7 @@ kinect-analyzer 的 `ImageProcessor::convertK4AColorToQImage()` / `SyncPlaybackM
 
 - 输入：Orbbec SDK v2 的 `#ROSBAG V2.0`，支持 LZ4 / 未压缩 chunk；暂不支持 BZ2。
 - 支持 MJPG 1080p（以及 1440p/1536p/2160p/3072p）和深度 NFOV/WFOV 常见模式。
-- 暂不支持 IR / IMU 流；遇到会明确报错，不会静默丢弃。
+- 暂不支持 IMU 流；IR 已支持（`mono16` → K4A `IR16`），没有独立 IR profile 时标定仍来自 stream profile/`calibration.json`。
 - K4A 输出依赖 `azurekinectsdk/` 的 `k4a.dll` / `k4arecord.dll`，GUI 还依赖 Windows 自带的 Common Controls。
 - BGRA 1080p 输出体积很大；这是为了旧播放器兼容而做的解码，不是有损重编码。
 - GUI 当前为 Windows 原生界面；不提供 macOS/Linux GUI。

@@ -8,6 +8,7 @@ namespace bag2mkv {
 
 std::vector<uint8_t> read_file(const std::string &path);
 std::string base64_encode(const uint8_t *data, size_t size);
+std::vector<uint8_t> base64_decode(const std::string &text);
 std::string to_hex(const uint8_t *data, size_t size);
 std::string json_escape(const std::string &s);
 std::string sha256_hex(const uint8_t *data, size_t size);

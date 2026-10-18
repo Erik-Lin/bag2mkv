@@ -79,15 +79,16 @@ k4a_color_resolution_t color_resolution_for(uint32_t width, uint32_t height) {
 WriterConfig build_writer_config(const ScanResult &scan, ColorOutput color_output, bool preserve_source_color) {
     WriterConfig cfg;
     for (const auto &kv : scan.frame_counts) {
-        if (kv.first != "COLOR" && kv.first != "DEPTH") {
+        if (kv.first != "COLOR" && kv.first != "DEPTH" && kv.first != "IR") {
             throw std::runtime_error("unsupported stream in this version: " + kv.first);
         }
     }
 
     const FrameMeta *color = first_frame(scan, "COLOR");
     const FrameMeta *depth = first_frame(scan, "DEPTH");
-    if (color == nullptr && depth == nullptr) {
-        throw std::runtime_error("bag contains no color or depth frames");
+    const FrameMeta *ir = first_frame(scan, "IR");
+    if (color == nullptr && depth == nullptr && ir == nullptr) {
+        throw std::runtime_error("bag contains no color, depth or IR frames");
     }
 
     if (color != nullptr) {
@@ -136,6 +137,34 @@ WriterConfig build_writer_config(const ScanResult &scan, ColorOutput color_outpu
         }
     }
 
+    if (ir != nullptr) {
+        cfg.ir_enabled = true;
+        cfg.ir_width = ir->width;
+        cfg.ir_height = ir->height;
+        const std::string enc = lower(ir->encoding);
+        if (enc != "mono16" && enc != "y16" && enc != "16uc1") {
+            throw std::runtime_error("unsupported IR encoding: " + ir->encoding);
+        }
+        if (cfg.depth_mode == K4A_DEPTH_MODE_OFF) {
+            if (cfg.ir_width == 640 && cfg.ir_height == 576) {
+                cfg.depth_mode = K4A_DEPTH_MODE_NFOV_UNBINNED;
+            } else if (cfg.ir_width == 320 && cfg.ir_height == 288) {
+                cfg.depth_mode = K4A_DEPTH_MODE_NFOV_2X2BINNED;
+            } else if (cfg.ir_width == 512 && cfg.ir_height == 512) {
+                cfg.depth_mode = K4A_DEPTH_MODE_WFOV_2X2BINNED;
+            } else if (cfg.ir_width == 1024 && cfg.ir_height == 1024) {
+                cfg.depth_mode = K4A_DEPTH_MODE_WFOV_UNBINNED;
+            } else {
+                throw std::runtime_error("unsupported IR resolution: " + std::to_string(cfg.ir_width) + "x" +
+                                         std::to_string(cfg.ir_height));
+            }
+        }
+        if (cfg.depth_enabled &&
+            (cfg.ir_width != cfg.depth_width || cfg.ir_height != cfg.depth_height)) {
+            throw std::runtime_error("IR and depth resolutions differ; K4A requires the same depth mode");
+        }
+    }
+
     int fps = 30;
     auto color_profile = scan.profiles.find(2);
     auto depth_profile = scan.profiles.find(3);
@@ -163,6 +192,14 @@ WriterConfig build_writer_config(const ScanResult &scan, ColorOutput color_outpu
             }
             if (f.data_size != uint64_t(f.width) * f.height * 2) {
                 throw std::runtime_error("depth frame size mismatch");
+            }
+        } else if (f.kind == "IR") {
+            if (f.width != cfg.ir_width || f.height != cfg.ir_height ||
+                lower(f.encoding) != lower(ir->encoding)) {
+                throw std::runtime_error("IR frame format changes within the bag");
+            }
+            if (f.data_size != uint64_t(f.width) * f.height * 2) {
+                throw std::runtime_error("IR frame size mismatch");
             }
         }
     }
@@ -209,6 +246,8 @@ uint64_t estimate_output_bytes(const ScanResult &scan, const WriterConfig &confi
             }
         } else if (frame.kind == "DEPTH" && config.depth_enabled) {
             total += uint64_t(frame.width) * frame.height * 2;
+        } else if (frame.kind == "IR" && config.ir_enabled) {
+            total += uint64_t(frame.width) * frame.height * 2;
         }
     }
     // Container index/cues/attachments/JSONL, plus a small safety margin.
@@ -227,7 +266,7 @@ std::string version() {
 #ifdef BAG2MKV_VERSION
     return BAG2MKV_VERSION;
 #else
-    return "0.3.1";
+    return "0.4.0";
 #endif
 }
 
@@ -422,6 +461,8 @@ ConvertSummary convert_bag(const ConvertOptions &options, const ProgressCallback
                 }
             } else if (frame.kind == "DEPTH") {
                 writer.write_depth(data, static_cast<size_t>(frame.data_size), frame.timestamp_usec);
+            } else if (frame.kind == "IR") {
+                writer.write_ir(data, static_cast<size_t>(frame.data_size), frame.timestamp_usec);
             } else {
                 throw std::runtime_error("unsupported frame kind during write: " + frame.kind);
             }
@@ -452,6 +493,7 @@ ConvertSummary convert_bag(const ConvertOptions &options, const ProgressCallback
     summary.total_frames = scan.frames.size();
     summary.color_frames = frame_count(scan, "COLOR");
     summary.depth_frames = frame_count(scan, "DEPTH");
+    summary.ir_frames = frame_count(scan, "IR");
     summary.first_timestamp_usec = scan.first_timestamp_usec;
     summary.last_timestamp_usec = scan.last_timestamp_usec;
     summary.color_width = config.color_width;
@@ -466,6 +508,10 @@ ConvertSummary convert_bag(const ConvertOptions &options, const ProgressCallback
     log_line(log, std::string("color: ") + (summary.bgra ? "BGRA " : "MJPEG ") +
                        std::to_string(summary.color_width) + "x" + std::to_string(summary.color_height) +
                        (summary.source_track ? " + ORIGINAL_COLOR_MJPG track" : ""));
+    if (summary.ir_frames) {
+        log_line(log, "IR: " + std::to_string(summary.ir_frames) + " frames, " +
+                           std::to_string(config.ir_width) + "x" + std::to_string(config.ir_height));
+    }
     log_line(log, "calibration: " + summary.calibration_source);
 
     if (options.verify_after) {
@@ -533,11 +579,14 @@ VerifySummary verify_bag(const std::string &bag_path, const std::string &mkv_pat
 
     std::map<uint64_t, std::vector<const FrameMeta *>> color_map;
     std::map<uint64_t, std::vector<const FrameMeta *>> depth_map;
+    std::map<uint64_t, std::vector<const FrameMeta *>> ir_map;
     for (const auto &f : expected.frames) {
         if (f.kind == "COLOR") {
             color_map[f.timestamp_usec].push_back(&f);
         } else if (f.kind == "DEPTH") {
             depth_map[f.timestamp_usec].push_back(&f);
+        } else if (f.kind == "IR") {
+            ir_map[f.timestamp_usec].push_back(&f);
         }
     }
     const FrameMeta *first_color = first_frame(expected, "COLOR");
@@ -545,13 +594,16 @@ VerifySummary verify_bag(const std::string &bag_path, const std::string &mkv_pat
     const bool source_is_mjpg = source_color_encoding == "mjpg" || source_color_encoding == "jpeg";
     const uint64_t expected_color = frame_count(expected, "COLOR");
     const uint64_t expected_depth = frame_count(expected, "DEPTH");
-    const uint64_t expected_total = expected_color + expected_depth;
+    const uint64_t expected_ir = frame_count(expected, "IR");
+    const uint64_t expected_total = expected_color + expected_depth + expected_ir;
 
     std::set<const FrameMeta *> used;
     uint64_t color_seen = 0;
     uint64_t depth_seen = 0;
+    uint64_t ir_seen = 0;
     uint64_t last_color_ts = 0;
     uint64_t last_depth_ts = 0;
+    uint64_t last_ir_ts = 0;
 
     BagReader bag_reader(bag_path);
     JpegDecoder jpeg_decoder;
@@ -588,6 +640,23 @@ VerifySummary verify_bag(const std::string &bag_path, const std::string &mkv_pat
                     it->second.front()->sha256.substr(0, 16) + " actual_sha " + hash.substr(0, 16);
         }
         log_line(log, line);
+        return false;
+    };
+
+    auto match_ir = [&](uint64_t ts, const std::string &hash, size_t actual_size) -> bool {
+        auto it = ir_map.find(ts);
+        if (it == ir_map.end()) {
+            log_line(log, "verify: no expected IR frame at timestamp " + std::to_string(ts));
+            return false;
+        }
+        for (const FrameMeta *frame : it->second) {
+            if (used.count(frame) == 0 && frame->sha256 == hash) {
+                used.insert(frame);
+                return true;
+            }
+        }
+        log_line(log, "verify: IR payload mismatch at timestamp " + std::to_string(ts) + " size " +
+                          std::to_string(actual_size));
         return false;
     };
 
@@ -685,8 +754,23 @@ VerifySummary verify_bag(const std::string &bag_path, const std::string &mkv_pat
             }
             k4a_image_release(depth);
         }
+        k4a_image_t ir = k4a_capture_get_ir_image(capture);
+        if (ir != nullptr) {
+            ++ir_seen;
+            uint64_t ts = k4a_image_get_device_timestamp_usec(ir);
+            last_ir_ts = ts;
+            std::string hash = sha256_hex(k4a_image_get_buffer(ir), size_t(k4a_image_get_size(ir)));
+            if (!match_ir(ts, hash, size_t(k4a_image_get_size(ir)))) {
+                ok = false;
+            }
+            if (k4a_image_get_format(ir) != K4A_IMAGE_FORMAT_IR16) {
+                log_line(log, "verify: unexpected IR image format");
+                ok = false;
+            }
+            k4a_image_release(ir);
+        }
         k4a_capture_release(capture);
-        report(progress, Stage::Verifying, color_seen + depth_seen, expected_total, "verifying");
+        report(progress, Stage::Verifying, color_seen + depth_seen + ir_seen, expected_total, "verifying");
     }
 
     if (color_seen != expected_color) {
@@ -699,8 +783,13 @@ VerifySummary verify_bag(const std::string &bag_path, const std::string &mkv_pat
                           std::to_string(expected_depth));
         ok = false;
     }
+    if (ir_seen != expected_ir) {
+        log_line(log, "verify: IR count " + std::to_string(ir_seen) + " != expected " +
+                          std::to_string(expected_ir));
+        ok = false;
+    }
     for (const auto &f : expected.frames) {
-        if ((f.kind == "COLOR" || f.kind == "DEPTH") && used.count(&f) == 0) {
+        if ((f.kind == "COLOR" || f.kind == "DEPTH" || f.kind == "IR") && used.count(&f) == 0) {
             log_line(log, "verify: missing frame " + f.kind + " at " + std::to_string(f.timestamp_usec));
             ok = false;
         }
@@ -782,14 +871,16 @@ VerifySummary verify_bag(const std::string &bag_path, const std::string &mkv_pat
     summary.ok = ok;
     summary.color_frames = color_seen;
     summary.depth_frames = depth_seen;
+    summary.ir_frames = ir_seen;
     if (ok) {
         log_line(log, "verify: OK (" + std::to_string(color_seen) + " color, " + std::to_string(depth_seen) +
-                          " depth)");
+                          " depth, " + std::to_string(ir_seen) + " IR)");
     }
     log_line(log, "verify: seen color=" + std::to_string(color_seen) + " last=" + std::to_string(last_color_ts) +
                       ", depth=" + std::to_string(depth_seen) + " last=" + std::to_string(last_depth_ts) +
+                      ", IR=" + std::to_string(ir_seen) + " last=" + std::to_string(last_ir_ts) +
                       ", expected color=" + std::to_string(expected_color) + " depth=" +
-                      std::to_string(expected_depth));
+                      std::to_string(expected_depth) + " IR=" + std::to_string(expected_ir));
     return summary;
 }
 

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(bag2mkv VERSION 0.3.1 LANGUAGES C CXX)
+project(bag2mkv VERSION 0.4.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,6 +20,8 @@ endif()
 
 add_library(bag2mkv_core STATIC
     src/bag.cpp
+    src/bag_writer.cpp
+    src/json.cpp
     src/scan.cpp
     src/lz4_util.cpp
     src/util.cpp
@@ -27,6 +29,7 @@ add_library(bag2mkv_core STATIC
     src/jpeg_decoder.cpp
     src/manifest.cpp
     src/converter.cpp
+    src/mkv2bag.cpp
 )
 target_include_directories(bag2mkv_core PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
@@ -77,4 +80,5 @@ if(BUILD_TESTING)
     add_test(NAME bag2mkv_self_test COMMAND $<TARGET_FILE:bag2mkv> --self-test)
     add_test(NAME bag2mkv_help COMMAND $<TARGET_FILE:bag2mkv> --help)
     add_test(NAME bag2mkv_batch_help COMMAND $<TARGET_FILE:bag2mkv> batch --help)
+    add_test(NAME bag2mkv_mkv2bag_help COMMAND $<TARGET_FILE:bag2mkv> mkv2bag --help)
 endif()

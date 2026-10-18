@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0
+
+- 新增 `mkv2bag`：把 K4A MKV 转回 Orbbec ROSBAG V2.0。
+- 反向转换优先使用 `orbbec_manifest.json` / `orbbec_frames.jsonl` 恢复设备、profile、property、帧号/时间戳/metadata。
+- 优先复制 `ORIGINAL_COLOR_MJPG` 的原始 JPEG 字节；没有源轨道时支持 MJPG 原码流或 BGRA raw（`bgra8`）。
+- 深度/IR 以 `mono16` 原始数据写回；新增 IR 输出支持，K4A MKV 的 IR 轨道可往返。
+- 输出 LZ4 压缩的 bag chunk，并写 connection/chunk-info；样本反向输出约 797 MB。
+- 无 manifest 的普通 K4A MKV 也能转换图像（从 tag 取设备序列号；无原始 profile/property）。
+- `--help` 增加 `mkv2bag`，CTest 增加对应帮助测试。
+
 ## 0.3.1
 
 - 修复 `batch` 对目录只扫描顶层、嵌套目录中 0 个 `.bag` 时报 `no .bag inputs found` 的问题。

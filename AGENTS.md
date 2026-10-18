@@ -14,7 +14,7 @@
 
 ### 1.1 仓库现状（重要）
 
-当前仓库已有 **v0.3.1 可运行实现**（C++17 + CMake，命令行 + Windows GUI）。除下面这些第三方/样本目录外，源码在 `src/`，构建文件是 `CMakeLists.txt`，测试在 `tests/`，使用说明在 `README.md`，贡献指南在 `CONTRIBUTING.md`，版本变化见 `CHANGELOG.md`，许可证是 `LICENSE`。
+当前仓库已有 **v0.4.0 可运行实现**（C++17 + CMake，命令行 + Windows GUI）。除下面这些第三方/样本目录外，源码在 `src/`，构建文件是 `CMakeLists.txt`，测试在 `tests/`，使用说明在 `README.md`，贡献指南在 `CONTRIBUTING.md`，版本变化见 `CHANGELOG.md`，许可证是 `LICENSE`。
 
 | 路径 | 内容 |
 |---|---|
@@ -27,7 +27,7 @@ Orbbec SDK v2 源码（`OrbbecSDK_v2-main/`）和 Body Tracking SDK（`azurekine
 
 样本文件很大，**不要修改、不要提交、不要复制进构建产物**。它们只用于测试和格式对照。
 
-### 1.2 已实现的 v0.3
+### 1.2 已实现的 v0.4
 
 ```powershell
 .\build\Release\bag2mkv.exe --help
@@ -37,6 +37,7 @@ Orbbec SDK v2 源码（`OrbbecSDK_v2-main/`）和 Body Tracking SDK（`azurekine
                                   [--verify] [--color bgra|mjpg] [--no-original-color]
 .\build\Release\bag2mkv.exe verify <bag> <mkv>
 .\build\Release\bag2mkv.exe batch <files-or-dir...> --output-dir <dir> [--verify] [--continue-on-error] [--limit N] [--no-recursive]
+.\build\Release\bag2mkv.exe mkv2bag <input.mkv> [--output <output.bag>] [--force]
 .\build\Release\bag2mkv.exe --version
 .\build\Release\bag2mkv.exe --self-test
 .\build\Release\bag2mkv-gui.exe [input.bag] [output.mkv] [--mjpg] [--start]
@@ -52,7 +53,8 @@ GUI 与 CLI 共用 `bag2mkv_core`：输入/输出浏览、拖拽、彩色模式�
 - 读取 1318 个 chunk、6 个 connection、47 条 property。
 - 转换 2715 帧（COLOR 1366 / DEPTH 1349）。
 - 默认输出 **BGRA 1080p + ORIGINAL_COLOR_MJPG 源轨道**，约 **12.53 GB**。
-- `--color mjpg` 输出约 1.20 GB 的 MJPG-only 文件（K4A 可读，但 kinect-analyzer 不认）。
+- `--color mjpg` 输出约 1.20 GB 的 MJPG-only 文件（K4A 可读；2026-10-18 起 kinect-analyzer 也可播放）。
+- `mkv2bag` 已跑通：`--color mjpg` MKV → bag（约 797 MB，LZ4）→ MKV，并对照原始 bag 验证通过；带 source track 的默认 MKV 反向也通过。
 - `verify` 逐帧验证 BGRA 像素/深度/时间戳，并校验原始 MJPEG 源轨道：
   - `verify: ORIGINAL_COLOR_MJPG OK (1366 frames)`
   - `verify: OK (1366 color, 1349 depth)`
@@ -68,10 +70,10 @@ GUI 与 CLI 共用 `bag2mkv_core`：输入/输出浏览、拖拽、彩色模式�
 这些是项目验收的硬约束。任何“优化”如果违反其中一条，都必须先和用户确认。
 
 1. **彩色不重编码**
-   - bag 里的彩色是 `mjpg`（JPEG 码流）。默认输出把 JPEG 解码成 **BGRA 1080p** 写入 `COLOR` 轨，以兼容 kinect-analyzer 这类只处理 `K4A_IMAGE_FORMAT_COLOR_BGRA32` 的播放器。
+   - bag 里的彩色是 `mjpg`（JPEG 码流）。默认输出把 JPEG 解码成 **BGRA 1080p** 写入 `COLOR` 轨，以兼容旧版播放器（新版 kinect-analyzer 也已支持 MJPG）。
    - 原始 JPEG 字节流必须同时保存到自定义轨道 `ORIGINAL_COLOR_MJPG`（codec `V_MS/VFW/FOURCC`，`MJPG`）。BGRA 只是 JPEG 的确定性解码结果，不引入额外有损步骤；原始码流用于真正的无损追溯。
    - 禁止用 H.264/HEVC/VP9/AV1/JPEG 再编码。
-   - `--color mjpg` 是“只复制原始码流、不转 BGRA”的小体积模式（~1.2 GB），但 **kinect-analyzer 不能播放 MJPG 彩色**：它的 `convertK4AColorToQImage()` 对非 BGRA 会按 `width*4` 逐行读取，越界误读。
+   - `--color mjpg` 是“只复制原始码流、不转 BGRA”的小体积模式（~1.2 GB）。2026-10-18 起 kinect-analyzer 的 `ImageProcessor::convertK4AColorToQImage()` 已支持 `K4A_IMAGE_FORMAT_COLOR_MJPG`（Qt JPEG 插件），MJPG 文件现在也可播放；旧版本播放器仍只支持 BGRA。
    - `--no-original-color` 可省略源轨道，默认输出约 12.3 GB。
 
 2. **深度逐值保留**
@@ -326,7 +328,7 @@ ID 定义在（上游 Orbbec SDK）：
 | 彩色 1920×1080 `mjpg`（默认） | 解码为 BGRA 1920×1080 → `color_format=K4A_IMAGE_FORMAT_COLOR_BGRA32`，`color_resolution=K4A_COLOR_RESOLUTION_1080P`，tag `BGRA_1080P`；原始 JPEG 另存 `ORIGINAL_COLOR_MJPG` |
 | 彩色 1920×1080 `mjpg`（`--color mjpg`） | `color_format=K4A_IMAGE_FORMAT_COLOR_MJPG`，tag `MJPG_1080P`；小体积，但 BGRA-only 播放器不可用 |
 | 深度 640×576 `mono16` | `depth_mode=K4A_DEPTH_MODE_NFOV_UNBINNED`，tag `NFOV_UNBINNED`，640×576 |
-| 无 IR | K4A writer 会自动建 IR 轨；不写 IR block 即可。已验证空 IR 轨不影响 K4A playback |
+| 无 IR | K4A writer 会自动建 IR 轨；有 IR 帧时写 IR，没有则空轨。已支持 IR 往返。 |
 | 未来有 IMU | 需 K4A IMU 轨 `S_K4A/IMU` + `matroska_imu_sample_t`；样本无 IMU，先不做 |
 
 默认 BGRA 输出约 12.53 GB（45 s）；`--color mjpg` 约 1.20 GB；`--no-original-color` 约 12.3 GB。
@@ -429,7 +431,7 @@ K4A playback 会读取 attachment `calibration.json`，格式大致为：
 
 ```cpp
 k4a_device_configuration_t cfg = K4A_DEVICE_CONFIG_INIT_DISABLE_ALL;
-cfg.color_format = K4A_IMAGE_FORMAT_COLOR_BGRA32;   // kinect-analyzer 只处理 BGRA
+cfg.color_format = K4A_IMAGE_FORMAT_COLOR_BGRA32;   // 旧版播放器兼容；新版也支持 MJPG
 cfg.color_resolution = K4A_COLOR_RESOLUTION_1080P;
 cfg.depth_mode = K4A_DEPTH_MODE_NFOV_UNBINNED;
 cfg.camera_fps = K4A_FRAMES_PER_SECOND_30;
@@ -499,6 +501,23 @@ k4a_record_close(rec);
 - `src/record/sdk/record.cpp`
 - `src/record/internal/matroska_read.cpp`
 
+### 4.6 `mkv2bag` 反向格式（v0.4，已验证）
+
+`mkv2bag` 把 K4A MKV 写回 `#ROSBAG V2.0`，实现位于 `src/bag_writer.*`、`src/mkv2bag.*`、`src/json.*`：
+
+- 读取 `orbbec_manifest.json`（device/streams/properties）和 `orbbec_frames.jsonl`（每帧 header/metadata）。
+- 若存在 `ORIGINAL_COLOR_MJPG` 自定义轨道，逐帧取原始 JPEG 字节写入 `sensor_msgs/Image.data`，不重新编码。
+- 没有源轨道时：COLOR 是 MJPG 则复制码流；COLOR 是 BGRA 则写 `encoding=bgra8`（raw，不做有损编码）。
+- DEPTH 和 IR 写 `encoding=mono16`；K4A playback 返回 LE，bag 也写 LE。
+- 输出 chunk 使用 LZ4 frame；chunk record 是 **header + 4-byte compressed_size + compressed data**（没有外层 data-length，和 Orbbec writer 一致）。
+- `index_pos` 处先写 connection 记录，再写 chunk-info；没有 index-data 记录（与原样本一致）。`BagReader` 只扫描到 `index_pos`，chunk-info 供其他读取器使用。
+- 帧时间戳、header seq/frame_id、number、system/global 时间、metadata、pixel_bit_size 从 frames JSONL 恢复；缺失时用 K4A image 时间戳/默认值。
+- **不要**把 chunk 写成普通 record 的 `header + data_len + data`：会多一个 4 字节，`BagReader` 会把 chunk 内的 4 字节 compressed_size 当作 record header，报 `chunk record missing op`。
+- 已实测：样本 bag → MJPG MKV → mkv2bag（797,152,740 B，LZ4）→ MKV；再用原始 bag 做 `verify`，1366 color / 1349 depth 全通过。
+- 已实测：默认 BGRA + `ORIGINAL_COLOR_MJPG` MKV 反向；`verify: ORIGINAL_COLOR_MJPG OK (1366 frames)`。
+- 已实测：无 manifest 的普通 K4A MKV（BGRA + IR）→ bag → MKV；`verify: OK (1158 color, 1158 depth, 1158 IR)`。
+- 限制：没有 manifest 时无法恢复原始 profile/property/connection definition；`calibration.json` 不参与反向重建（profile 来自 manifest）。
+
 ---
 
 ## 5. 代码结构（已实现）
@@ -506,14 +525,17 @@ k4a_record_close(rec);
 ```text
 CMakeLists.txt
 src/
-  main.cpp              // CLI: help / inspect / convert / verify / --self-test
+  main.cpp              // CLI: help / inspect / convert / verify / batch / mkv2bag / --self-test
   converter.hpp/.cpp    // 共享核心：扫描、转换、验证、进度/取消/日志
   errors.hpp            // CancelledError
   gui_win32.cpp         // Windows 原生 GUI（bag2mkv-gui）
   bag.hpp / bag.cpp     // 容器、chunk、LZ4、连接/消息解析
+  bag_writer.hpp/.cpp   // 反向：LZ4 ROSBAG writer（chunk/connection/chunk-info）
+  mkv2bag.hpp/.cpp      // 反向：K4A playback + manifest → bag
+  json.hpp/.cpp         // manifest/JSONL 的小型 JSON DOM
   scan.hpp / scan.cpp   // Pass 1: 索引、profile/property/device、逐帧 hash
-  lz4_util.hpp/.cpp     // LZ4 frame 解压
-  k4a_writer.hpp/.cpp   // K4A writer 封装（BGRA + ORIGINAL_COLOR_MJPG 自定义轨）
+  lz4_util.hpp/.cpp     // LZ4 frame 解压/压缩
+  k4a_writer.hpp/.cpp   // K4A writer 封装（BGRA/MJPG + IR + ORIGINAL_COLOR_MJPG）
   jpeg_decoder.hpp/.cpp // Windows WIC JPEG → BGRA（默认彩色输出）
   manifest.hpp/.cpp     // manifest/JSONL/calibration 合成
   util.hpp/.cpp         // SHA-256、base64、JSON escape、BE swap
@@ -654,7 +676,7 @@ GUI 是 Windows 原生 Win32（Common Controls），不依赖 Qt；`bag2mkv-gui`
 - 捕获数 > 0；首帧彩色/深度时间戳与输入一致。
 - 默认彩色 image 格式 == `K4A_IMAGE_FORMAT_COLOR_BGRA32`，1920×1080，buffer 为 BGRA；`--color mjpg` 时 == `K4A_IMAGE_FORMAT_COLOR_MJPG`。
 - 深度 image 格式 == `K4A_IMAGE_FORMAT_DEPTH16`，640×576，buffer 值正确（LE）。
-- 空 IR 轨返回 NULL，不导致 playback 失败。
+- 空 IR 轨返回 NULL；有 IR 帧时写 `IR16`，`verify` 会逐帧校验 IR。不导致 playback 失败。
 - `ORIGINAL_COLOR_MJPG` 源轨可用 `k4a_playback_get_next_data_block` 逐帧读回。
 
 ### 7.4 失败路径
@@ -689,7 +711,7 @@ GUI 是 Windows 原生 Win32（Common Controls），不依赖 Qt；`bag2mkv-gui`
 18. **标定参数顺序是 `cx,cy,fx,fy,k1..k6,codx,cody,p2,p1`**；K4A 还会按 mode 的 `bin_w/bin_h/crop` 做 unitized→pixel 转换。不要按 `fx,fy,cx,cy` 的顺序写。
 19. **`Rt.Translation` 单位是米**；bag 的 D2C 是毫米。
 20. **不要提交样本/构建产物**。仓库已有 `.gitignore` 忽略 `*.bag`/`*.mkv`/`build/`/`out/`。
-21. **kinect-analyzer 的彩色转换只支持 BGRA**。不要用 `--color mjpg` 的输出去喂它；`convertK4AColorToQImage()` 对非 BGRA 会按 `width*4` 逐行读，MJPG 只有 ~150 KB，必然越界。
+21. **kinect-analyzer 2026-10-18 起支持 MJPG 彩色**（Qt `qjpeg` 逐显示帧解码）；旧版只支持 BGRA。新版本不要再用旧结论否定 MJPG 输出。
 
 ---
 
@@ -709,7 +731,7 @@ GUI 是 Windows 原生 Win32（Common Controls），不依赖 Qt；`bag2mkv-gui`
 
 1. 标定的 **畸变系数 / D2C 外参** 还没有做逐点投影验证；内参已验证完全一致。需要和 K4A `k4a_calibration_3d_to_2d` 或实际点云对照。
 2. IMU 标定使用零占位（K4A parser 要求 gyro/accel entry）；当前版本不支持 IMU 流。未来支持 IMU 时必须用真实标定。
-3. IR 流暂不支持；遇到 IR 会明确报错，不会静默丢弃。
+3. IR 流已支持（`mono16` → K4A `IR16`），但没有独立 IR profile 的畸变验证；样本 bag 本身无 IR，需用其他设备样本继续验证。
 4. BZ2 压缩 chunk 暂不支持；LZ4 / 未压缩已支持。
 5. K4A 写入依赖 `azurekinectsdk` 的预编译 DLL；如要完全源码化，需要 vendor K4A Wrapper 的 matroska writer。
 6. `K4A_CALIBRATION_FILE` tag 目前是无 target 的全局 tag；playback 按文件名 `calibration.json` 回退成功，但严格 target UID 未设置。
@@ -748,5 +770,5 @@ GUI 是 Windows 原生 Win32（Common Controls），不依赖 Qt；`bag2mkv-gui`
 
 ---
 
-**一句话总结**：默认把 JPEG 解码成 BGRA 1080p 写入 COLOR（兼容 kinect-analyzer），原始 JPEG 原样保存在 `ORIGINAL_COLOR_MJPG`；深度 16-bit 只做 LE→BE；所有时间戳/帧号/metadata/profile/属性/标定都进 K4A MKV + attachment；用 `k4a_record_create(device=NULL)` 写，用 `k4a_playback_*` 验。`--color mjpg` 可退回 1.2 GB 的纯 MJPEG 输出。
+**一句话总结**：默认把 JPEG 解码成 BGRA 1080p 写入 COLOR（兼容旧播放器；新版 kinect-analyzer 也支持 MJPG），原始 JPEG 原样保存在 `ORIGINAL_COLOR_MJPG`；深度/IR 16-bit 只做 LE→BE；所有时间戳/帧号/metadata/profile/属性/标定都进 K4A MKV + attachment；用 `k4a_record_create(device=NULL)` 写，用 `k4a_playback_*` 验。`--color mjpg` 可退回 1.2 GB 的纯 MJPEG 输出；`mkv2bag` 可从 MJPG/BGRA/IR MKV 反向重建 LZ4 ROSBAG。
 
