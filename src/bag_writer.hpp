@@ -17,9 +17,9 @@ struct BagConnection {
 };
 
 // Writes a ROSBAG V2.0 stream compatible with the Orbbec rosbag reader.
-// Chunks are uncompressed for the first reverse-conversion implementation;
-// the bag reader accepts compression=none. Connection records are written in
-// the first chunk and again in the index section, matching the original bag.
+// Chunks use LZ4 frames; the bag reader also accepts compression=none/bz2.
+// Connection records are written in the first chunk and again in the index
+// section, matching the original bag.
 class BagWriter {
 public:
     explicit BagWriter(const std::string &path);

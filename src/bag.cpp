@@ -1,4 +1,5 @@
 #include "bag.hpp"
+#include "bz2_util.hpp"
 #include "lz4_util.hpp"
 
 #include <algorithm>
@@ -323,7 +324,7 @@ void BagReader::scan(const BagCallbacks &callbacks) {
             } else if (compression == "none" || compression.empty()) {
                 chunk = std::move(compressed);
             } else if (compression == "bz2") {
-                throw std::runtime_error("bz2-compressed bag chunks are not supported in this version");
+                chunk = bz2_decompress(compressed);
             } else {
                 throw std::runtime_error("unsupported bag chunk compression: " + compression);
             }
@@ -372,6 +373,9 @@ std::vector<uint8_t> BagReader::read_chunk(uint64_t chunk_offset) {
     std::vector<uint8_t> compressed = read_bytes(compressed_size);
     if (compression == "lz4") {
         return lz4_decompress(compressed);
+    }
+    if (compression == "bz2") {
+        return bz2_decompress(compressed);
     }
     if (compression == "none" || compression.empty()) {
         return compressed;

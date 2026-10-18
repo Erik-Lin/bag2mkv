@@ -1,6 +1,7 @@
 #include "converter.hpp"
 
 #include "bag.hpp"
+#include "bz2_util.hpp"
 #include "errors.hpp"
 #include "jpeg_decoder.hpp"
 #include "manifest.hpp"
@@ -266,7 +267,7 @@ std::string version() {
 #ifdef BAG2MKV_VERSION
     return BAG2MKV_VERSION;
 #else
-    return "0.4.1";
+    return "0.4.2";
 #endif
 }
 
@@ -285,6 +286,22 @@ bool self_test() {
     }
     if (json_escape("a\"b\\c\n") != "a\\\"b\\\\c\\n") {
         ok = false;
+    }
+    {
+        const uint8_t bz2[] = {
+            0x42, 0x5a, 0x68, 0x39, 0x31, 0x41, 0x59, 0x26, 0x53, 0x59, 0xf2, 0x85, 0x24, 0xf0, 0x00, 0x00,
+            0x02, 0xd9, 0x80, 0x00, 0x10, 0x40, 0x00, 0x10, 0x00, 0x12, 0x44, 0x80, 0x10, 0x20, 0x00, 0x31,
+            0x06, 0x4c, 0x41, 0x00, 0xd3, 0xd2, 0x58, 0xf4, 0x43, 0x87, 0xe2, 0xee, 0x48, 0xa7, 0x0a, 0x12,
+            0x1e, 0x50, 0xa4, 0x9e, 0x00};
+        try {
+            std::vector<uint8_t> decoded = bz2_decompress(std::vector<uint8_t>(bz2, bz2 + sizeof(bz2)));
+            const std::string text(decoded.begin(), decoded.end());
+            if (text != "hello bz2\n") {
+                ok = false;
+            }
+        } catch (...) {
+            ok = false;
+        }
     }
     const uint8_t src[4] = {0x01, 0x02, 0x03, 0x04};
     std::vector<uint8_t> dst;

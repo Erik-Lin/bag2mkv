@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.2
+
+- 支持读取 `compression=bz2` 的 ROSBAG V2.0 chunk；`scan()` 和 `read_chunk()` 都走 bzip2 解压。
+- vendor `third_party/bzip2` 1.0.8（BSD-like），静态链接，不引入运行时 DLL 依赖。
+- `--self-test` 增加 BZ2 已知向量校验；CTest 覆盖。
+- 用合成 BZ2 bag 完成 `inspect` → `convert` → `verify`：1 帧 640×576 深度，verify OK。
+- 真实 Orbbec BZ2 样本尚未提供；LZ4/未压缩样本不受影响。
+
 ## 0.4.1
 
 - GUI 增加“MKV 转 bag...”按钮：选择 K4A MKV 和输出 `.bag`，复用 `mkv_to_bag`，支持日志、取消和输出目录。

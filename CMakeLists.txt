@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(bag2mkv VERSION 0.4.1 LANGUAGES C CXX)
+project(bag2mkv VERSION 0.4.2 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -18,12 +18,27 @@ if(MSVC)
     target_compile_options(lz4 PRIVATE /W0)
 endif()
 
+add_library(bz2 STATIC
+    third_party/bzip2/bzlib.c
+    third_party/bzip2/blocksort.c
+    third_party/bzip2/huffman.c
+    third_party/bzip2/crctable.c
+    third_party/bzip2/randtable.c
+    third_party/bzip2/compress.c
+    third_party/bzip2/decompress.c
+)
+target_include_directories(bz2 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/third_party/bzip2")
+if(MSVC)
+    target_compile_options(bz2 PRIVATE /W0)
+endif()
+
 add_library(bag2mkv_core STATIC
     src/bag.cpp
     src/bag_writer.cpp
     src/json.cpp
     src/scan.cpp
     src/lz4_util.cpp
+    src/bz2_util.cpp
     src/util.cpp
     src/k4a_writer.cpp
     src/jpeg_decoder.cpp
@@ -38,6 +53,7 @@ target_include_directories(bag2mkv_core PUBLIC
 target_compile_definitions(bag2mkv_core PUBLIC BAG2MKV_VERSION="${PROJECT_VERSION}")
 target_link_libraries(bag2mkv_core PUBLIC
     lz4
+    bz2
     "${K4A_ROOT}/lib/k4arecord.lib"
     "${K4A_ROOT}/lib/k4a.lib"
     bcrypt

@@ -1,4 +1,4 @@
-# bag2mkv v0.4.1
+# bag2mkv v0.4.2
 
 把 Orbbec SDK 录制的 RGB-D `.bag` 无损转换成 Azure Kinect（K4A）兼容的 `.mkv`。
 提供 **命令行版** `bag2mkv.exe` 和 **Windows 原生 GUI** `bag2mkv-gui.exe`，两者共用同一个转换核心。
@@ -160,7 +160,7 @@ kinect-analyzer 的 `ImageProcessor::convertK4AColorToQImage()` / `SyncPlaybackM
 
 ## 当前版本限制
 
-- 输入：Orbbec SDK v2 的 `#ROSBAG V2.0`，支持 LZ4 / 未压缩 chunk；暂不支持 BZ2。
+- 输入：Orbbec SDK v2 的 `#ROSBAG V2.0`，支持 LZ4 / BZ2 / 未压缩 chunk。
 - 支持 MJPG 1080p（以及 1440p/1536p/2160p/3072p）和深度 NFOV/WFOV 常见模式。
 - 暂不支持 IMU 流；IR 已支持（`mono16` → K4A `IR16`），没有独立 IR profile 时标定仍来自 stream profile/`calibration.json`。
 - K4A 输出依赖 `azurekinectsdk/` 的 `k4a.dll` / `k4arecord.dll`，GUI 还依赖 Windows 自带的 Common Controls。
@@ -191,4 +191,5 @@ kinect-analyzer 的 `ImageProcessor::convertK4AColorToQImage()` / `SyncPlaybackM
 本项目使用 **MIT License**，版权归 **林山力** 所有。完整文本见 [LICENSE](LICENSE)。
 
 `third_party/lz4/` 使用其自身的 BSD 2-Clause License，见 [third_party/lz4/LICENSE](third_party/lz4/LICENSE)。
+`third_party/bzip2/` 使用其自身的 BSD-like License，见 [third_party/bzip2/COPYING](third_party/bzip2/COPYING)。
 `azurekinectsdk/` 是 Orbbec 提供的预编译运行时，遵循其自带许可/条款。

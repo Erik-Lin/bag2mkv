@@ -14,7 +14,7 @@
 
 ### 1.1 仓库现状（重要）
 
-当前仓库已有 **v0.4.1 可运行实现**（C++17 + CMake，命令行 + Windows GUI）。除下面这些第三方/样本目录外，源码在 `src/`，构建文件是 `CMakeLists.txt`，测试在 `tests/`，使用说明在 `README.md`，贡献指南在 `CONTRIBUTING.md`，版本变化见 `CHANGELOG.md`，许可证是 `LICENSE`。
+当前仓库已有 **v0.4.2 可运行实现**（C++17 + CMake，命令行 + Windows GUI）。除下面这些第三方/样本目录外，源码在 `src/`，构建文件是 `CMakeLists.txt`，测试在 `tests/`，使用说明在 `README.md`，贡献指南在 `CONTRIBUTING.md`，版本变化见 `CHANGELOG.md`，许可证是 `LICENSE`。
 
 | 路径 | 内容 |
 |---|---|
@@ -27,7 +27,7 @@ Orbbec SDK v2 源码（`OrbbecSDK_v2-main/`）和 Body Tracking SDK（`azurekine
 
 样本文件很大，**不要修改、不要提交、不要复制进构建产物**。它们只用于测试和格式对照。
 
-### 1.2 已实现的 v0.4.1
+### 1.2 已实现的 v0.4.2
 
 ```powershell
 .\build\Release\bag2mkv.exe --help
@@ -503,7 +503,7 @@ k4a_record_close(rec);
 - `src/record/sdk/record.cpp`
 - `src/record/internal/matroska_read.cpp`
 
-### 4.6 `mkv2bag` 反向格式（v0.4.1，已验证）
+### 4.6 `mkv2bag` 反向格式（v0.4.2，已验证）
 
 `mkv2bag` 把 K4A MKV 写回 `#ROSBAG V2.0`，实现位于 `src/bag_writer.*`、`src/mkv2bag.*`、`src/json.*`：
 
@@ -537,11 +537,13 @@ src/
   json.hpp/.cpp         // manifest/JSONL 的小型 JSON DOM
   scan.hpp / scan.cpp   // Pass 1: 索引、profile/property/device、逐帧 hash
   lz4_util.hpp/.cpp     // LZ4 frame 解压/压缩
+  bz2_util.hpp/.cpp     // BZ2 chunk 解压（vendored bzip2）
   k4a_writer.hpp/.cpp   // K4A writer 封装（BGRA/MJPG + IR + ORIGINAL_COLOR_MJPG）
   jpeg_decoder.hpp/.cpp // Windows WIC JPEG → BGRA（默认彩色输出）
   manifest.hpp/.cpp     // manifest/JSONL/calibration 合成
   util.hpp/.cpp         // SHA-256、base64、JSON escape、BE swap
 third_party/lz4/        // vendored LZ4
+third_party/bzip2/      // vendored bzip2 1.0.8（BSD-like）
 tests/
   run_sample.ps1        // 样本转换 + verify 集成脚本（-Color bgra|mjpg）
   run_sample.cmd        // 绕过 PowerShell 执行策略的包装
@@ -634,6 +636,7 @@ GUI 是 Windows 原生 Win32（Common Controls），不依赖 Qt；`bag2mkv-gui`
 
 - C++17。
 - LZ4：优先用 Orbbec SDK 里的 `roslz4`（BSD）或系统 `liblz4`；不要自己实现 LZ4。
+- BZ2：仓库已 vendor `third_party/bzip2`（BSD-like），静态链接；不要依赖系统 DLL。
 - K4A 写入：第一版用 `azurekinectsdk` 的 `k4arecord.lib` + DLL（已烟测）；如要纯源码，再 vendor K4A Wrapper 的 matroska writer。
 - JSON：可用 nlohmann/json（MIT）或 cJSON；calibration/manifest 都要写 JSON。
 - 压缩 manifest：zlib/gzip 可选；不压缩也能接受（几百 KB）。
@@ -735,7 +738,7 @@ GUI 是 Windows 原生 Win32（Common Controls），不依赖 Qt；`bag2mkv-gui`
 1. 标定的 **畸变系数 / D2C 外参** 还没有做逐点投影验证；内参已验证完全一致。需要和 K4A `k4a_calibration_3d_to_2d` 或实际点云对照。
 2. IMU 标定使用零占位（K4A parser 要求 gyro/accel entry）；当前版本不支持 IMU 流。未来支持 IMU 时必须用真实标定。
 3. IR 流已支持（`mono16` → K4A `IR16`），但没有独立 IR profile 的畸变验证；样本 bag 本身无 IR，需用其他设备样本继续验证。
-4. BZ2 压缩 chunk 暂不支持；LZ4 / 未压缩已支持。
+4. BZ2 chunk 已支持：vendored bzip2 1.0.8，`scan()` 和 `read_chunk()` 都用 `BZ2_bzDecompress`；LZ4 / 未压缩仍保留。真实 Orbbec BZ2 样本尚未拿到，已用合成 BZ2 bag 做过 inspect/convert/verify。
 5. K4A 写入依赖 `azurekinectsdk` 的预编译 DLL；如要完全源码化，需要 vendor K4A Wrapper 的 matroska writer。
 6. `K4A_CALIBRATION_FILE` tag 目前是无 target 的全局 tag；playback 按文件名 `calibration.json` 回退成功，但严格 target UID 未设置。
 7. 写线程磁盘队列较慢时 K4A 仍会打印 “Disk write speed is too low”；`k4a_set_debug_message_handler` 过滤不到这条内部日志。BGRA 模式每帧 sleep 10 ms、MJPG 2 ms 限速；慢磁盘/大文件仍可能看到该日志。
