@@ -2,6 +2,7 @@
 build/
 out/
 _scratch/
+_scratch_*
 *.tmp
 *.log
 *.pdb

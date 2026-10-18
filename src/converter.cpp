@@ -183,6 +183,40 @@ std::string get_tag(k4a_playback_t playback, const std::string &name) {
     return std::string(buffer.data());
 }
 
+std::string format_bytes(uint64_t bytes) {
+    char buf[64];
+    if (bytes >= 1024ull * 1024ull * 1024ull) {
+        std::snprintf(buf, sizeof(buf), "%.2f GB", double(bytes) / (1024.0 * 1024.0 * 1024.0));
+    } else if (bytes >= 1024ull * 1024ull) {
+        std::snprintf(buf, sizeof(buf), "%.1f MB", double(bytes) / (1024.0 * 1024.0));
+    } else {
+        std::snprintf(buf, sizeof(buf), "%llu B", static_cast<unsigned long long>(bytes));
+    }
+    return buf;
+}
+
+uint64_t estimate_output_bytes(const ScanResult &scan, const WriterConfig &config) {
+    uint64_t total = 0;
+    for (const auto &frame : scan.frames) {
+        if (frame.kind == "COLOR" && config.color_enabled) {
+            if (config.color_format == K4A_IMAGE_FORMAT_COLOR_BGRA32) {
+                total += uint64_t(frame.width) * frame.height * 4;
+            } else {
+                total += frame.data_size;
+            }
+            if (config.preserve_source_color) {
+                total += frame.data_size;
+            }
+        } else if (frame.kind == "DEPTH" && config.depth_enabled) {
+            total += uint64_t(frame.width) * frame.height * 2;
+        }
+    }
+    // Container index/cues/attachments/JSONL, plus a small safety margin.
+    total += 16ull * 1024ull * 1024ull;
+    total += total / 50;  // ~2%
+    return total;
+}
+
 }  // namespace
 
 void install_k4a_log_filter() {
@@ -190,7 +224,11 @@ void install_k4a_log_filter() {
 }
 
 std::string version() {
-    return "0.2.0";
+#ifdef BAG2MKV_VERSION
+    return BAG2MKV_VERSION;
+#else
+    return "0.3.0";
+#endif
 }
 
 ScanResult inspect_bag(const std::string &bag_path, bool hash_frames) {
@@ -275,11 +313,14 @@ ConvertSummary convert_bag(const ConvertOptions &options, const ProgressCallback
                        config.preserve_source_color ? "ORIGINAL_COLOR_MJPG" : "");
 
     const fs::path output_path(options.output_mkv);
+    uint64_t reclaimable = 0;
     if (fs::exists(output_path)) {
         if (!options.force) {
             throw std::runtime_error("output already exists (use --force): " + options.output_mkv);
         }
-        fs::remove(output_path);
+        std::error_code size_ec;
+        reclaimable = fs::file_size(output_path, size_ec);
+        if (size_ec) reclaimable = 0;
     }
     if (output_path.has_parent_path() && !output_path.parent_path().empty()) {
         std::error_code ec;
@@ -287,6 +328,23 @@ ConvertSummary convert_bag(const ConvertOptions &options, const ProgressCallback
         if (ec) {
             throw std::runtime_error("cannot create output directory: " + output_path.parent_path().string());
         }
+    }
+    {
+        const uint64_t estimate = estimate_output_bytes(scan, config);
+        std::error_code space_ec;
+        fs::path space_path = output_path.has_parent_path() ? output_path.parent_path() : fs::path(".");
+        fs::space_info space = fs::space(space_path, space_ec);
+        if (!space_ec && space.available > 0) {
+            uint64_t available = space.available + reclaimable;
+            log_line(log, "estimate: ~" + format_bytes(estimate) + " output; free: " + format_bytes(available));
+            if (estimate > available) {
+                throw std::runtime_error("not enough free disk space for output (need ~" + format_bytes(estimate) +
+                                         ", available " + format_bytes(available) + ")");
+            }
+        }
+    }
+    if (fs::exists(output_path)) {
+        fs::remove(output_path);
     }
     const fs::path temp_path = output_path.string() + ".tmp";
     fs::remove(temp_path);

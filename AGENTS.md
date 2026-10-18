@@ -14,7 +14,7 @@
 
 ### 1.1 仓库现状（重要）
 
-当前仓库已有 **v0.2.0 可运行实现**（C++17 + CMake，命令行 + Windows GUI）。除下面这些第三方/样本目录外，源码在 `src/`，构建文件是 `CMakeLists.txt`，测试在 `tests/`，使用说明在 `README.md`，贡献指南在 `CONTRIBUTING.md`，许可证是 `LICENSE`。
+当前仓库已有 **v0.3.0 可运行实现**（C++17 + CMake，命令行 + Windows GUI）。除下面这些第三方/样本目录外，源码在 `src/`，构建文件是 `CMakeLists.txt`，测试在 `tests/`，使用说明在 `README.md`，贡献指南在 `CONTRIBUTING.md`，版本变化见 `CHANGELOG.md`，许可证是 `LICENSE`。
 
 | 路径 | 内容 |
 |---|---|
@@ -27,7 +27,7 @@ Orbbec SDK v2 源码（`OrbbecSDK_v2-main/`）和 Body Tracking SDK（`azurekine
 
 样本文件很大，**不要修改、不要提交、不要复制进构建产物**。它们只用于测试和格式对照。
 
-### 1.2 已实现的 v0.2
+### 1.2 已实现的 v0.3
 
 ```powershell
 .\build\Release\bag2mkv.exe --help
@@ -36,9 +36,11 @@ Orbbec SDK v2 源码（`OrbbecSDK_v2-main/`）和 Body Tracking SDK（`azurekine
 .\build\Release\bag2mkv.exe convert <bag> -o <mkv> [--force] [--no-calibration] [--calibration-json <file>]
                                   [--verify] [--color bgra|mjpg] [--no-original-color]
 .\build\Release\bag2mkv.exe verify <bag> <mkv>
+.\build\Release\bag2mkv.exe batch <files-or-dir...> --output-dir <dir> [--verify] [--continue-on-error]
 .\build\Release\bag2mkv.exe --version
 .\build\Release\bag2mkv.exe --self-test
 .\build\Release\bag2mkv-gui.exe [input.bag] [output.mkv] [--mjpg] [--start]
+.\build\Release\bag2mkv-gui.exe --batch <input-dir> --batch-output <output-dir> [--mjpg]
 ```
 
 GUI 与 CLI 共用 `bag2mkv_core`：输入/输出浏览、拖拽、彩色模式、源轨道、自动验证、
@@ -543,6 +545,7 @@ tests/
 
 - `ScanResult.frames` 只保存元数据和 chunk/payload 偏移，不保存图像像素；内存占用小。
 - Pass 2 用单 chunk cache + 单帧 BGRA 缓冲；WIC 每帧解码一次，内存约 8 MB。
+- 写文件前会按帧数/彩色模式估算输出大小并检查输出盘可用空间；空间不足在写入前报错，不会先删除旧输出。
 - K4A image/capture 的所有权按 §4.5 处理：set 后不再 release image，只 release capture。
 
 ### 5.3 并发
@@ -581,10 +584,15 @@ CMake 的 post-build 会把 `azurekinectsdk/bin/*.dll` 复制到 `build/Release/
 .\build\Release\bag2mkv.exe inspect .\20251111_143747_001_cam1_CL8R35300SH_gait.bag
 .\build\Release\bag2mkv.exe convert .\20251111_143747_001_cam1_CL8R35300SH_gait.bag -o .\out.mkv --force
 .\build\Release\bag2mkv.exe verify .\20251111_143747_001_cam1_CL8R35300SH_gait.bag .\out.mkv
+.\build\Release\bag2mkv.exe batch .\recordings --output-dir .\out\mkv --color mjpg --verify
 .\build\Release\bag2mkv-gui.exe    # GUI；可传 [input.bag] [output.mkv] [--mjpg] [--start]
+.\build\Release\bag2mkv-gui.exe --batch <input-dir> --batch-output <output-dir> [--mjpg]
 .\tests\run_sample.cmd         # 默认 BGRA + 源轨，转换 + verify；删除 12.5 GB 输出
 .\tests\run_sample.cmd -Color mjpg   # 小体积 MJPG-only 测试
 ```
+
+GUI 的“批量目录...”与 CLI `batch` 都按顶层目录扫描 `*.bag`，每个输入生成同名 `.mkv`；
+GUI 批量默认继续处理失败后的剩余文件，CLI 默认停止，需 `--continue-on-error` 才继续。
 
 如果执行策略拦截 `.ps1`，用 `tests\run_sample.cmd`（内部带 `-ExecutionPolicy Bypass`），或：
 
@@ -706,7 +714,7 @@ GUI 是 Windows 原生 Win32（Common Controls），不依赖 Qt；`bag2mkv-gui`
 6. `K4A_CALIBRATION_FILE` tag 目前是无 target 的全局 tag；playback 按文件名 `calibration.json` 回退成功，但严格 target UID 未设置。
 7. 写线程磁盘队列较慢时 K4A 仍会打印 “Disk write speed is too low”；`k4a_set_debug_message_handler` 过滤不到这条内部日志。BGRA 模式每帧 sleep 10 ms、MJPG 2 ms 限速；慢磁盘/大文件仍可能看到该日志。
 8. 默认输出是 raw 深度 + BGRA 彩色（~12.5 GB/45 s），没有可选的 FFV1 等无损压缩容器；BGRA 体积是旧播放器兼容的代价。
-9. GUI 当前仅 Windows Win32；没有安装包、没有多语言、没有任务队列/批量列表。`--start` 与 `--mjpg` 主要用于预填和冒烟测试。
+9. GUI 当前仅 Windows Win32；没有安装包、没有多语言、没有可编辑队列。批量模式按顶层目录处理，不递归；`--start`、`--mjpg`、`--batch`、`--batch-output` 主要用于预填和冒烟测试。
 
 ---
 

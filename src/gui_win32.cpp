@@ -5,9 +5,12 @@
 #include <commctrl.h>
 #include <commdlg.h>
 #include <shellapi.h>
+#include <shlobj.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cwctype>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -37,12 +40,21 @@ constexpr int ID_PROGRESS = 1015;
 constexpr int ID_STATUS = 1016;
 constexpr int ID_LOG = 1017;
 constexpr int ID_NO_CALIB = 1018;
+constexpr int ID_BATCH = 1019;
 
 constexpr UINT WM_APP_PROGRESS = WM_APP + 1;
 constexpr UINT WM_APP_LOG = WM_APP + 2;
 constexpr UINT WM_APP_DONE = WM_APP + 3;
 constexpr UINT WM_APP_ERROR = WM_APP + 4;
 constexpr UINT WM_APP_CANCELLED = WM_APP + 5;
+constexpr UINT WM_APP_BATCH_DONE = WM_APP + 6;
+
+struct BatchResult {
+    uint64_t total = 0;
+    uint64_t succeeded = 0;
+    uint64_t failed = 0;
+    std::wstring output_dir;
+};
 
 std::string narrow(const std::wstring &s) {
     if (s.empty()) return {};
@@ -82,6 +94,22 @@ std::wstring human_size(uint64_t bytes) {
     return buf;
 }
 
+std::wstring pick_folder(HWND owner, const wchar_t *title) {
+    BROWSEINFOW info{};
+    info.hwndOwner = owner;
+    info.lpszTitle = title;
+    info.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE | BIF_USENEWUI;
+    PIDLIST_ABSOLUTE idlist = SHBrowseForFolderW(&info);
+    if (idlist == nullptr) return {};
+    wchar_t path[MAX_PATH] = {};
+    std::wstring result;
+    if (SHGetPathFromIDListW(idlist, path)) {
+        result = path;
+    }
+    CoTaskMemFree(idlist);
+    return result;
+}
+
 struct App {
     HINSTANCE instance = nullptr;
     HWND hwnd = nullptr;
@@ -102,6 +130,7 @@ struct App {
     HWND hClearCalib = nullptr;
     HWND hStart = nullptr;
     HWND hCancel = nullptr;
+    HWND hBatch = nullptr;
     HWND hOpen = nullptr;
     HWND hProgress = nullptr;
     HWND hStatus = nullptr;
@@ -111,6 +140,10 @@ struct App {
     std::atomic<bool> cancel{false};
     bool running = false;
     bool close_when_done = false;
+    bool batch_mode = false;
+    std::atomic<uint64_t> batch_index{0};
+    uint64_t batch_total = 0;
+    std::wstring last_output_dir;
     ConvertSummary last_summary;
 
     int S(int value) const { return MulDiv(value, dpi, 96); }
@@ -127,10 +160,13 @@ struct App {
     void browse_output();
     void browse_calibration();
     void start_conversion();
+    void start_batch();
+    void start_batch_dirs(const std::wstring &input_dir, const std::wstring &output_dir);
     void request_cancel();
     void open_output_folder();
     void on_progress(const ProgressInfo &info);
     void on_done(const ConvertSummary &summary);
+    void on_batch_done(const BatchResult &result);
     void on_error(const std::string &error);
     void on_cancelled();
     void on_command(int id, int code);
@@ -181,6 +217,7 @@ void App::create_controls() {
 
     hStart = make(L"BUTTON", L"开始转换", BS_DEFPUSHBUTTON, 0, ID_START);
     hCancel = make(L"BUTTON", L"取消", BS_PUSHBUTTON, 0, ID_CANCEL);
+    hBatch = make(L"BUTTON", L"批量目录...", BS_PUSHBUTTON, 0, ID_BATCH);
     hOpen = make(L"BUTTON", L"打开输出目录", BS_PUSHBUTTON, 0, ID_OPEN);
 
     hProgress = CreateWindowExW(0, PROGRESS_CLASSW, L"", WS_CHILD | WS_VISIBLE | PBS_SMOOTH, 0, 0, 0, 0, hwnd,
@@ -265,7 +302,8 @@ void App::layout() {
 
     MoveWindow(hStart, margin, y, S(120), S(32), TRUE);
     MoveWindow(hCancel, margin + S(132), y, S(90), S(32), TRUE);
-    MoveWindow(hOpen, margin + S(234), y, S(120), S(32), TRUE);
+    MoveWindow(hBatch, margin + S(234), y, S(120), S(32), TRUE);
+    MoveWindow(hOpen, margin + S(366), y, S(120), S(32), TRUE);
     y += S(42);
 
     MoveWindow(hProgress, margin, y, rc.right - 2 * margin, S(18), TRUE);
@@ -293,6 +331,7 @@ void App::set_running(bool value) {
     EnableWindow(hClearCalib, !value);
     EnableWindow(hStart, !value);
     EnableWindow(hCancel, value);
+    EnableWindow(hBatch, !value);
     if (value) {
         EnableWindow(hOpen, FALSE);
     }
@@ -426,6 +465,10 @@ void App::start_conversion() {
     }
     cancel = false;
     close_when_done = false;
+    batch_mode = false;
+    batch_index = 0;
+    batch_total = 0;
+    last_output_dir.clear();
     set_running(true);
     reset_progress();
     SetWindowTextW(hLog, L"");
@@ -469,6 +512,143 @@ void App::start_conversion() {
     });
 }
 
+void App::start_batch() {
+    std::wstring input_dir = pick_folder(hwnd, L"选择包含 .bag 的输入目录");
+    if (input_dir.empty()) return;
+    std::wstring output_dir = pick_folder(hwnd, L"选择输出 MKV 目录");
+    if (output_dir.empty()) return;
+    start_batch_dirs(input_dir, output_dir);
+}
+
+void App::start_batch_dirs(const std::wstring &input_dir, const std::wstring &output_dir) {
+    std::error_code ec;
+    std::vector<std::filesystem::path> bags;
+    for (const auto &entry : std::filesystem::directory_iterator(input_dir, ec)) {
+        if (!entry.is_regular_file()) continue;
+        std::wstring ext = entry.path().extension().wstring();
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](wchar_t c) { return static_cast<wchar_t>(towlower(c)); });
+        if (ext == L".bag") bags.push_back(entry.path());
+    }
+    if (ec) {
+        MessageBoxW(hwnd, (L"无法读取输入目录：\n" + input_dir).c_str(), L"bag2mkv", MB_ICONERROR | MB_OK);
+        return;
+    }
+    std::sort(bags.begin(), bags.end());
+    if (bags.empty()) {
+        MessageBoxW(hwnd, L"该目录下没有 .bag 文件。", L"bag2mkv", MB_ICONINFORMATION | MB_OK);
+        return;
+    }
+    std::filesystem::create_directories(output_dir, ec);
+    if (ec) {
+        MessageBoxW(hwnd, (L"无法创建输出目录：\n" + output_dir).c_str(), L"bag2mkv", MB_ICONERROR | MB_OK);
+        return;
+    }
+
+    bool force = SendMessageW(hForce, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    if (!force) {
+        int existing = 0;
+        for (const auto &bag : bags) {
+            std::filesystem::path out = std::filesystem::path(output_dir) / (bag.stem().wstring() + L".mkv");
+            if (std::filesystem::exists(out)) ++existing;
+        }
+        if (existing > 0) {
+            int answer = MessageBoxW(hwnd, L"部分输出文件已存在，是否全部覆盖？", L"bag2mkv",
+                                     MB_ICONQUESTION | MB_YESNO | MB_DEFBUTTON2);
+            if (answer != IDYES) return;
+            force = true;
+        }
+    }
+
+    ConvertOptions base;
+    base.force = force;
+    base.no_calibration = SendMessageW(hNoCalib, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    base.verify_after = SendMessageW(hVerify, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    base.color_output =
+        SendMessageW(hColor, CB_GETCURSEL, 0, 0) == 1 ? ColorOutput::Mjpg : ColorOutput::Bgra;
+    base.preserve_source_color =
+        base.color_output == ColorOutput::Bgra &&
+        SendMessageW(hPreserve, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    std::wstring calib = get_text(hCalib);
+    if (!calib.empty()) {
+        if (!std::filesystem::exists(std::filesystem::path(calib))) {
+            MessageBoxW(hwnd, L"calibration.json 不存在。", L"bag2mkv", MB_ICONERROR | MB_OK);
+            return;
+        }
+        base.calibration_json_path = narrow(calib);
+    }
+
+    if (worker.joinable()) worker.join();
+    cancel = false;
+    close_when_done = false;
+    batch_mode = true;
+    batch_total = bags.size();
+    batch_index = 0;
+    set_running(true);
+    reset_progress();
+    SetWindowTextW(hLog, L"");
+    set_status(L"批量转换中...");
+    append_log(L"批量输入: " + input_dir);
+    append_log(L"批量输出: " + output_dir);
+    append_log(L"文件数: " + std::to_wstring(bags.size()));
+
+    worker = std::thread([this, base, bags, output_dir]() {
+        BatchResult result;
+        result.total = bags.size();
+        result.output_dir = output_dir;
+        for (size_t i = 0; i < bags.size(); ++i) {
+            if (cancel.load()) {
+                PostMessageW(hwnd, WM_APP_CANCELLED, 0, 0);
+                return;
+            }
+            batch_index = i + 1;
+            std::wstring out_path = (std::filesystem::path(output_dir) /
+                                     (bags[i].stem().wstring() + L".mkv")).wstring();
+            std::wstring prefix = L"[" + std::to_wstring(i + 1) + L"/" + std::to_wstring(bags.size()) + L"] ";
+            auto *start_line = new std::wstring(prefix + bags[i].wstring() + L" -> " + out_path);
+            if (!PostMessageW(hwnd, WM_APP_LOG, 0, reinterpret_cast<LPARAM>(start_line))) {
+                delete start_line;
+            }
+            ConvertOptions options = base;
+            options.input_bag = narrow(bags[i].wstring());
+            options.output_mkv = narrow(out_path);
+            try {
+                convert_bag(
+                    options,
+                    [this, prefix](const ProgressInfo &info) -> bool {
+                        if (cancel.load()) return false;
+                        auto *copy = new ProgressInfo(info);
+                        copy->message = narrow(prefix) + copy->message;
+                        if (!PostMessageW(hwnd, WM_APP_PROGRESS, 0, reinterpret_cast<LPARAM>(copy))) {
+                            delete copy;
+                            return false;
+                        }
+                        return true;
+                    },
+                    [this, prefix](const std::string &line) {
+                        auto *copy = new std::wstring(prefix + widen(line));
+                        if (!PostMessageW(hwnd, WM_APP_LOG, 0, reinterpret_cast<LPARAM>(copy))) {
+                            delete copy;
+                        }
+                    });
+                ++result.succeeded;
+            } catch (const CancelledError &) {
+                PostMessageW(hwnd, WM_APP_CANCELLED, 0, 0);
+                return;
+            } catch (const std::exception &e) {
+                ++result.failed;
+                auto *error_line = new std::wstring(prefix + L"错误: " + widen(e.what()));
+                if (!PostMessageW(hwnd, WM_APP_LOG, 0, reinterpret_cast<LPARAM>(error_line))) {
+                    delete error_line;
+                }
+            }
+        }
+        auto *copy = new BatchResult(result);
+        if (!PostMessageW(hwnd, WM_APP_BATCH_DONE, 0, reinterpret_cast<LPARAM>(copy))) {
+            delete copy;
+        }
+    });
+}
+
 void App::request_cancel() {
     if (!running) return;
     cancel = true;
@@ -478,10 +658,11 @@ void App::request_cancel() {
 }
 
 void App::open_output_folder() {
-    if (last_summary.output_path.empty()) return;
-    std::filesystem::path p(last_summary.output_path);
-    std::wstring folder = p.parent_path().wstring();
-    if (folder.empty()) folder = L".";
+    std::wstring folder = last_output_dir;
+    if (folder.empty() && !last_summary.output_path.empty()) {
+        folder = std::filesystem::path(last_summary.output_path).parent_path().wstring();
+    }
+    if (folder.empty()) return;
     ShellExecuteW(hwnd, L"open", folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
@@ -500,9 +681,17 @@ void App::on_progress(const ProgressInfo &info) {
         SendMessageW(hProgress, PBM_SETPOS, pos, 0);
     }
     if (info.stage == Stage::Writing || info.stage == Stage::Verifying || info.stage == Stage::Scanning) {
-        wchar_t buf[128];
-        swprintf_s(buf, L"%s：%llu / %llu", stage.c_str(), static_cast<unsigned long long>(info.current),
-                   static_cast<unsigned long long>(info.total));
+        wchar_t buf[160];
+        if (batch_mode) {
+            swprintf_s(buf, L"[%llu/%llu] %s：%llu / %llu",
+                       static_cast<unsigned long long>(batch_index.load()),
+                       static_cast<unsigned long long>(batch_total), stage.c_str(),
+                       static_cast<unsigned long long>(info.current),
+                       static_cast<unsigned long long>(info.total));
+        } else {
+            swprintf_s(buf, L"%s：%llu / %llu", stage.c_str(), static_cast<unsigned long long>(info.current),
+                       static_cast<unsigned long long>(info.total));
+        }
         set_status(buf);
     } else {
         set_status(stage + L"...");
@@ -511,7 +700,10 @@ void App::on_progress(const ProgressInfo &info) {
 
 void App::on_done(const ConvertSummary &summary) {
     if (worker.joinable()) worker.join();
+    batch_mode = false;
     last_summary = summary;
+    last_output_dir = std::filesystem::path(summary.output_path).parent_path().wstring();
+    if (last_output_dir.empty()) last_output_dir = L".";
     set_running(false);
     cancel = false;
     SendMessageW(hProgress, PBM_SETPOS, 1000, 0);
@@ -533,8 +725,31 @@ void App::on_done(const ConvertSummary &summary) {
     }
 }
 
+void App::on_batch_done(const BatchResult &result) {
+    if (worker.joinable()) worker.join();
+    batch_mode = false;
+    last_output_dir = result.output_dir;
+    set_running(false);
+    cancel = false;
+    SendMessageW(hProgress, PBM_SETPOS, 1000, 0);
+    std::wstring status = L"批量完成：" + std::to_wstring(result.succeeded) + L" 成功";
+    if (result.failed > 0) status += L"，" + std::to_wstring(result.failed) + L" 失败";
+    set_status(status);
+    append_log(status);
+    EnableWindow(hOpen, TRUE);
+    std::wstring message = L"批量转换完成。\n\n成功：" + std::to_wstring(result.succeeded) +
+                           L"\n失败：" + std::to_wstring(result.failed) + L"\n总计：" +
+                           std::to_wstring(result.total) + L"\n\n输出目录：\n" + result.output_dir;
+    MessageBoxW(hwnd, message.c_str(), L"bag2mkv",
+                (result.failed == 0 ? MB_ICONINFORMATION : MB_ICONWARNING) | MB_OK);
+    if (close_when_done) {
+        DestroyWindow(hwnd);
+    }
+}
+
 void App::on_error(const std::string &error) {
     if (worker.joinable()) worker.join();
+    batch_mode = false;
     set_running(false);
     cancel = false;
     set_status(L"转换失败");
@@ -547,6 +762,7 @@ void App::on_error(const std::string &error) {
 
 void App::on_cancelled() {
     if (worker.joinable()) worker.join();
+    batch_mode = false;
     set_running(false);
     cancel = false;
     reset_progress();
@@ -576,6 +792,9 @@ void App::on_command(int id, int code) {
             break;
         case ID_CANCEL:
             if (code == BN_CLICKED) request_cancel();
+            break;
+        case ID_BATCH:
+            if (code == BN_CLICKED) start_batch();
             break;
         case ID_OPEN:
             if (code == BN_CLICKED) open_output_folder();
@@ -661,6 +880,11 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             if (app && error) app->on_error(narrow(*error));
             return 0;
         }
+        case WM_APP_BATCH_DONE: {
+            std::unique_ptr<BatchResult> result(reinterpret_cast<BatchResult *>(lparam));
+            if (app && result) app->on_batch_done(*result);
+            return 0;
+        }
         case WM_APP_CANCELLED:
             if (app) app->on_cancelled();
             return 0;
@@ -737,7 +961,8 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
         return 1;
     }
 
-    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"bag2mkv - Orbbec bag 转 K4A MKV",
+    std::wstring window_title = L"bag2mkv v" + widen(version()) + L" - Orbbec bag 转 K4A MKV";
+    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, window_title.c_str(),
                                 WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT,
                                 app.S(760), app.S(520), nullptr, nullptr, instance, &app);
     if (!hwnd) {
@@ -747,12 +972,16 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
     ShowWindow(hwnd, SW_SHOW);
     UpdateWindow(hwnd);
 
-    // Optional launch arguments: [input.bag] [output.mkv] [--mjpg] [--start]
+    // Optional launch arguments:
+    //   [input.bag] [output.mkv] [--mjpg] [--start]
+    //   --batch <input-dir> --batch-output <output-dir>
     // These also make "Open with" and scripted smoke tests possible.
     int argc = 0;
     LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (argv != nullptr) {
         std::vector<std::wstring> positional;
+        std::wstring batch_input;
+        std::wstring batch_output;
         bool mjpg = false;
         bool autostart = false;
         for (int i = 1; i < argc; ++i) {
@@ -761,6 +990,10 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
                 autostart = true;
             } else if (arg == L"--mjpg" || arg == L"--color-mjpg") {
                 mjpg = true;
+            } else if (arg == L"--batch" && i + 1 < argc) {
+                batch_input = argv[++i];
+            } else if (arg == L"--batch-output" && i + 1 < argc) {
+                batch_output = argv[++i];
             } else if (arg.rfind(L"--", 0) == 0) {
                 // ignore unknown GUI switches
             } else {
@@ -777,7 +1010,9 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
             SendMessageW(hwnd, WM_COMMAND, MAKEWPARAM(ID_COLOR, CBN_SELCHANGE), 0);
         }
         LocalFree(argv);
-        if (autostart && !positional.empty()) {
+        if (!batch_input.empty() && !batch_output.empty()) {
+            app.start_batch_dirs(batch_input, batch_output);
+        } else if (autostart && !positional.empty()) {
             PostMessageW(hwnd, WM_COMMAND, MAKEWPARAM(ID_START, BN_CLICKED), 0);
         }
     }

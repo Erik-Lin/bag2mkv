@@ -1,4 +1,4 @@
-# bag2mkv v0.2.0
+# bag2mkv v0.3.0
 
 把 Orbbec SDK 录制的 RGB-D `.bag` 无损转换成 Azure Kinect（K4A）兼容的 `.mkv`。
 提供 **命令行版** `bag2mkv.exe` 和 **Windows 原生 GUI** `bag2mkv-gui.exe`，两者共用同一个转换核心。
@@ -9,6 +9,8 @@
 - 验证：K4A playback 逐帧比对 BGRA 像素/深度值/时间戳，并校验原始 MJPEG 轨道的 SHA-256。
 
 > 默认输出约 **12.5 GB / 45 s**（BGRA 1080p 很大）。只需要 K4A 原码流、不要求旧播放器兼容时，用 `--color mjpg` 输出约 **1.2 GB**。
+
+版本变化见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 构建
 
@@ -36,18 +38,21 @@ ctest --test-dir build -C Release --output-on-failure
 3. 按需勾选“保留原始 MJPEG 轨道”“转换后自动验证”“覆盖已存在的输出文件”。
 4. 可选：选择同设备/同模式的 `calibration.json`；不选则从 bag 的 stream profile 合成。
 5. 点击“开始转换”。界面会显示扫描/写入/验证进度，可随时取消；日志在底部。
+6. 需要批量时点击“批量目录...”，选择输入目录和输出目录；目录下每个 `.bag` 生成一个同名 `.mkv`。单个文件失败不会中断其余文件。
 
 GUI 也支持命令行预填，方便“打开方式”或脚本冒烟测试：
 
 ```powershell
 .\build\Release\bag2mkv-gui.exe capture.bag capture.mkv
 .\build\Release\bag2mkv-gui.exe capture.bag capture_mjpg.mkv --mjpg --start
+.\build\Release\bag2mkv-gui.exe --batch .\recordings --batch-output .\mkv --mjpg
 ```
 
 - 第一个非选项参数：输入 bag。
 - 第二个非选项参数：输出 mkv（省略则自动建议）。
 - `--mjpg`：预选 MJPEG 原码流。
 - `--start`：启动后自动开始转换。
+- `--batch <dir>` + `--batch-output <dir>`：直接进入批量目录模式。
 
 ## 命令行使用
 
@@ -56,11 +61,12 @@ GUI 也支持命令行预填，方便“打开方式”或脚本冒烟测试：
 ```powershell
 .\build\Release\bag2mkv.exe --help
 .\build\Release\bag2mkv.exe help convert
+.\build\Release\bag2mkv.exe help batch
 .\build\Release\bag2mkv.exe help verify
 .\build\Release\bag2mkv.exe --version
 ```
 
-`convert --help` 包含全部选项、彩色模式、文件大小、标定说明、示例和退出码。
+`convert --help` 包含全部选项、彩色模式、文件大小、标定说明、示例和退出码；`batch --help` 包含批量目录、错误继续和输出命名规则。
 
 ### 常用命令
 
@@ -80,6 +86,12 @@ GUI 也支持命令行预填，方便“打开方式”或脚本冒烟测试：
 
 # 单独验证
 .\build\Release\bag2mkv.exe verify .\...bag .\out.mkv
+
+# 批量转换一个目录（每个 bag 一个同名 mkv）
+.\build\Release\bag2mkv.exe batch .\recordings --output-dir .\mkv --verify
+
+# 批量时出错继续
+.\build\Release\bag2mkv.exe batch .\recordings --output-dir .\mkv --color mjpg --continue-on-error
 ```
 
 常用选项：
@@ -92,6 +104,8 @@ GUI 也支持命令行预填，方便“打开方式”或脚本冒烟测试：
 - `--verify`：转换后立即逐帧验证。
 
 退出码：`0` 成功，`1` 转换/验证失败，`2` 用法错误，`3` 用户取消。
+
+转换开始前会按帧数/彩色模式估算输出大小并检查输出磁盘可用空间；空间不足会在写入前报错，不会先删除已有输出文件。
 
 ## 输出结构（默认 BGRA）
 

@@ -5,11 +5,15 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <filesystem>
 #include <functional>
 #include <iostream>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+namespace fs = std::filesystem;
 
 namespace {
 
@@ -27,16 +31,19 @@ void print_overview() {
               << "COMMANDS\n"
               << "  inspect <input.bag>              Show device, streams, properties, frame counts and timestamps.\n"
               << "  convert <input.bag> -o <out.mkv>  Convert a bag to a K4A-compatible MKV.\n"
+              << "  batch <files-or-dir...> --output-dir <dir>\n"
+              << "                                    Convert many bags, one MKV per input.\n"
               << "  verify  <input.bag> <out.mkv>     Independently verify frames, timestamps and calibration.\n"
               << "  help [command]                    Show this help, or detailed help for one command.\n"
               << "\n"
               << "GUI\n"
               << "  Run bag2mkv-gui.exe for the Windows GUI. It uses the same converter and supports\n"
-              << "  drag-and-drop, file pickers, progress, cancel and an embedded log.\n"
+              << "  drag-and-drop, a batch-folder button, progress, cancel and an embedded log.\n"
               << "\n"
               << "QUICK START\n"
               << "  bag2mkv inspect capture.bag\n"
               << "  bag2mkv convert capture.bag -o capture.mkv --verify\n"
+              << "  bag2mkv batch .\\recordings --output-dir .\\mkv --verify\n"
               << "  bag2mkv verify capture.bag capture.mkv\n"
               << "\n"
               << "DEFAULT OUTPUT\n"
@@ -107,6 +114,34 @@ void print_convert_help() {
               << "  1  runtime/conversion/verification error\n"
               << "  2  usage error\n"
               << "  3  cancelled by the user\n";
+}
+
+void print_batch_help() {
+    std::cout << "bag2mkv batch " << version() << " - convert many bags into one output directory\n"
+              << "\n"
+              << "USAGE\n"
+              << "  bag2mkv batch <file-or-directory...> --output-dir <dir> [options]\n"
+              << "\n"
+              << "Each input .bag produces <output-dir>/<input-stem>.mkv. A directory input is scanned\n"
+              << "non-recursively for *.bag. Duplicate output names are an error.\n"
+              << "\n"
+              << "OPTIONS\n"
+              << "  --output-dir, -o <dir>   Required. Created if it does not exist.\n"
+              << "  --color bgra|mjpg        Same as convert. Default: bgra.\n"
+              << "  --no-original-color      Omit the ORIGINAL_COLOR_MJPG source track.\n"
+              << "  --force                  Overwrite existing MKVs.\n"
+              << "  --no-calibration         Do not write calibration.json.\n"
+              << "  --calibration-json <f>   Use one calibration for all inputs (same device/mode only).\n"
+              << "  --verify                 Verify each MKV after conversion.\n"
+              << "  --continue-on-error      Keep converting remaining files after a failure.\n"
+              << "  -h, --help               Show this help and exit.\n"
+              << "\n"
+              << "EXAMPLES\n"
+              << "  bag2mkv batch .\\recordings --output-dir .\\mkv --verify\n"
+              << "  bag2mkv batch a.bag b.bag --output-dir .\\mkv --color mjpg --continue-on-error\n"
+              << "\n"
+              << "EXIT CODES\n"
+              << "  0 all conversions succeeded; 1 at least one failed; 2 usage error; 3 cancelled.\n";
 }
 
 void print_inspect_help() {
@@ -202,6 +237,151 @@ struct CliProgress {
 
     unsigned last_pct = 101;
 };
+
+int cmd_batch(int argc, char **argv) {
+    for (int i = 2; i < argc; ++i) {
+        if (std::string(argv[i]) == "--help" || std::string(argv[i]) == "-h") {
+            print_batch_help();
+            return 0;
+        }
+    }
+    ConvertOptions base;
+    std::string output_dir;
+    std::vector<std::string> inputs;
+    bool continue_on_error = false;
+    for (int i = 2; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--output-dir" || arg == "-o") {
+            if (i + 1 >= argc) {
+                std::cerr << "error: missing value for " << arg << "\n";
+                return 2;
+            }
+            output_dir = argv[++i];
+        } else if (arg == "--force") {
+            base.force = true;
+        } else if (arg == "--no-calibration") {
+            base.no_calibration = true;
+        } else if (arg == "--no-original-color") {
+            base.preserve_source_color = false;
+        } else if (arg == "--verify") {
+            base.verify_after = true;
+        } else if (arg == "--continue-on-error") {
+            continue_on_error = true;
+        } else if (arg == "--color") {
+            if (i + 1 >= argc) {
+                std::cerr << "error: missing value for --color\n";
+                return 2;
+            }
+            std::string value = argv[++i];
+            std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+            if (value == "bgra") {
+                base.color_output = ColorOutput::Bgra;
+            } else if (value == "mjpg" || value == "mjpeg") {
+                base.color_output = ColorOutput::Mjpg;
+            } else {
+                std::cerr << "error: --color must be bgra or mjpg\n";
+                return 2;
+            }
+        } else if (arg == "--calibration-json") {
+            if (i + 1 >= argc) {
+                std::cerr << "error: missing value for --calibration-json\n";
+                return 2;
+            }
+            base.calibration_json_path = argv[++i];
+        } else if (!arg.empty() && arg[0] == '-') {
+            std::cerr << "error: unknown option for batch: " << arg << "\n";
+            return 2;
+        } else {
+            inputs.push_back(arg);
+        }
+    }
+    if (inputs.empty()) {
+        std::cerr << "error: batch requires at least one input bag or directory\n\n";
+        print_batch_help();
+        return 2;
+    }
+    if (output_dir.empty()) {
+        std::cerr << "error: batch requires --output-dir <dir>\n\n";
+        print_batch_help();
+        return 2;
+    }
+
+    std::vector<std::string> expanded;
+    for (const auto &input : inputs) {
+        std::error_code ec;
+        if (fs::is_directory(input, ec)) {
+            for (const auto &entry : fs::directory_iterator(input, ec)) {
+                if (!entry.is_regular_file()) continue;
+                std::string ext = entry.path().extension().string();
+                std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+                if (ext == ".bag") {
+                    expanded.push_back(entry.path().string());
+                }
+            }
+            if (ec) {
+                std::cerr << "error: cannot scan directory " << input << ": " << ec.message() << "\n";
+                return 1;
+            }
+        } else {
+            expanded.push_back(input);
+        }
+    }
+    if (expanded.empty()) {
+        std::cerr << "error: no .bag inputs found\n";
+        return 1;
+    }
+
+    std::error_code ec;
+    fs::create_directories(output_dir, ec);
+    if (ec) {
+        std::cerr << "error: cannot create output directory " << output_dir << ": " << ec.message() << "\n";
+        return 1;
+    }
+
+    std::set<std::string> used_outputs;
+    uint64_t succeeded = 0;
+    uint64_t failed = 0;
+    const uint64_t total = expanded.size();
+    for (size_t i = 0; i < expanded.size(); ++i) {
+        const std::string &input = expanded[i];
+        const std::string prefix = "[" + std::to_string(i + 1) + "/" + std::to_string(total) + "] ";
+        fs::path input_path(input);
+        fs::path output_path = fs::path(output_dir) / (input_path.stem().string() + ".mkv");
+        std::string output = output_path.string();
+        std::string output_key = output;
+        std::transform(output_key.begin(), output_key.end(), output_key.begin(),
+                       [](unsigned char c) { return char(std::tolower(c)); });
+        if (!used_outputs.insert(output_key).second) {
+            std::cerr << prefix << "error: duplicate output name: " << output << "\n";
+            ++failed;
+            if (!continue_on_error) break;
+            continue;
+        }
+
+        std::cout << prefix << input << " -> " << output << "\n";
+        ConvertOptions options = base;
+        options.input_bag = input;
+        options.output_mkv = output;
+        CliProgress progress;
+        try {
+            convert_bag(
+                options, [&progress](const ProgressInfo &info) { return progress(info); },
+                [&prefix](const std::string &line) { std::cout << prefix << line << "\n"; });
+            ++succeeded;
+            std::cout << prefix << "OK\n";
+        } catch (const CancelledError &) {
+            std::cerr << "cancelled\n";
+            return 3;
+        } catch (const std::exception &e) {
+            ++failed;
+            std::cerr << prefix << "error: " << e.what() << "\n";
+            if (!continue_on_error) break;
+        }
+    }
+
+    std::cout << "batch: " << succeeded << " succeeded, " << failed << " failed, " << total << " total\n";
+    return failed == 0 ? 0 : 1;
+}
 
 int cmd_inspect(int argc, char **argv) {
     if (argc == 3 && (std::string(argv[2]) == "--help" || std::string(argv[2]) == "-h")) {
@@ -341,6 +521,8 @@ int main(int argc, char **argv) {
                 std::string topic = argv[2];
                 if (topic == "convert") {
                     print_convert_help();
+                } else if (topic == "batch") {
+                    print_batch_help();
                 } else if (topic == "inspect") {
                     print_inspect_help();
                 } else if (topic == "verify") {
@@ -372,6 +554,9 @@ int main(int argc, char **argv) {
         }
         if (command == "convert") {
             return cmd_convert(argc, argv);
+        }
+        if (command == "batch") {
+            return cmd_batch(argc, argv);
         }
         if (command == "verify") {
             return cmd_verify(argc, argv);

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(bag2mkv VERSION 0.2.0 LANGUAGES C CXX)
+project(bag2mkv VERSION 0.3.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -32,6 +32,7 @@ target_include_directories(bag2mkv_core PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${K4A_ROOT}/include"
 )
+target_compile_definitions(bag2mkv_core PUBLIC BAG2MKV_VERSION="${PROJECT_VERSION}")
 target_link_libraries(bag2mkv_core PUBLIC
     lz4
     "${K4A_ROOT}/lib/k4arecord.lib"
@@ -75,4 +76,5 @@ include(CTest)
 if(BUILD_TESTING)
     add_test(NAME bag2mkv_self_test COMMAND $<TARGET_FILE:bag2mkv> --self-test)
     add_test(NAME bag2mkv_help COMMAND $<TARGET_FILE:bag2mkv> --help)
+    add_test(NAME bag2mkv_batch_help COMMAND $<TARGET_FILE:bag2mkv> batch --help)
 endif()
