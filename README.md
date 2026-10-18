@@ -1,21 +1,127 @@
-# bag2mkv v0.5.0
+<h1 align="center">bag2mkv</h1>
 
-把 Orbbec SDK 录制的 RGB-D `.bag` 无损转换成 Azure Kinect（K4A）兼容的 `.mkv`。
-提供 **命令行版** `bag2mkv.exe` 和 **Windows 原生 GUI** `bag2mkv-gui.exe`，两者共用同一个转换核心。
+<p align="center">
+  <strong>Lossless RGB-D conversion between Orbbec ROSBAG, Azure Kinect MKV, and ROS 1/2 bags.</strong>
+</p>
 
-- 彩色：默认解码为 **BGRA 1080p** 写入 `COLOR` 轨（兼容 kinect-analyzer 等只处理 BGRA 的 K4A 播放器）；原始 MJPEG 字节流原样保存到 `ORIGINAL_COLOR_MJPG` 自定义轨道，不丢失压缩源码流。
-- 深度：`mono16` 逐值保留，文件内为 K4A `b16g`（BE）；由 K4A writer 从 LE 转换。
-- 元数据：设备信息、stream profile、property、逐帧时间戳/帧号/metadata 写入 MKV attachment。
-- 验证：K4A playback 逐帧比对 BGRA 像素/深度值/时间戳，并校验原始 MJPEG 轨道的 SHA-256。
-- ROS：支持 Orbbec bag ↔ 标准 ROS1 bag / ROS2 sqlite3 bag；ROS1 输出带标准 index data，ROS2 使用 CDR `sensor_msgs` 和 `metadata.yaml`。
+<p align="center">
+  <a href="README.md">English</a> ·
+  <a href="README.zh-CN.md">简体中文</a>
+</p>
 
-> 默认输出约 **12.5 GB / 45 s**（BGRA 1080p 很大）。只需要 K4A 原码流、不要求旧播放器兼容时，用 `--color mjpg` 输出约 **1.2 GB**。
+<p align="center">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.5.0-2ea44f">
+  <img alt="Windows" src="https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078D4">
+  <img alt="Linux" src="https://img.shields.io/badge/Linux-CLI%20roadmap-lightgrey">
+  <img alt="C++17" src="https://img.shields.io/badge/C%2B%2B-17-00599C">
+  <img alt="CMake" src="https://img.shields.io/badge/CMake-3.16%2B-064F8C">
+  <img alt="License" src="https://img.shields.io/badge/license-MIT-yellow">
+  <img alt="ROS" src="https://img.shields.io/badge/ROS-1%20%7C%202-22314E">
+</p>
 
-版本变化见 [CHANGELOG.md](CHANGELOG.md)。
+> **v0.5.0** — Windows x64 CLI + GUI. ROS 1/2 conversion is available from the CLI.
+> Linux CLI support is planned; the current release is Windows-only.
 
-## 构建
+`bag2mkv` is a focused, verifiable conversion toolkit for RGB-D recordings. It does **not** re-encode color, filter depth, align streams, or pretend a generic video muxer is a Kinect recorder. It preserves what the source actually contains, and gives you a way to prove it.
 
-需要 Visual Studio 2022（MSVC）、CMake 3.16+、仓库自带的 `azurekinectsdk/`。
+---
+
+## Table of contents
+
+- [Why bag2mkv](#why-bag2mkv)
+- [Conversion matrix](#conversion-matrix)
+- [Lossless contract](#lossless-contract)
+- [Quick start](#quick-start)
+- [Command line](#command-line)
+- [ROS 1 / ROS 2](#ros-1--ros-2)
+- [GUI](#gui)
+- [Architecture](#architecture)
+- [Format notes](#format-notes)
+- [Verification](#verification)
+- [Limitations and roadmap](#limitations-and-roadmap)
+- [FAQ](#faq)
+- [Contributing](#contributing)
+- [License](#license)
+- [Repository description](#repository-description)
+
+---
+
+## Why bag2mkv
+
+Azure Kinect recordings (`.mkv`) and Orbbec ROSBAG recordings (`.bag`) both contain synchronized color, depth, IR, and metadata, but they speak different container dialects. Generic converters usually take the easy route: decode everything to video, drop depth precision, or silently resize frames.
+
+`bag2mkv` takes the harder route:
+
+- **Color is never re-encoded.** Original MJPEG bytes are preserved in a dedicated K4A track. BGRA is a deterministic decode for players that need it.
+- **Depth is bit-exact.** Only the required 16-bit little-endian → big-endian representation change is applied by the K4A writer.
+- **Metadata survives.** Device information, stream profiles, properties, frame timestamps, frame numbers, and raw metadata are written as MKV attachments.
+- **Writes are atomic.** Output is written to `.tmp`, then renamed only after a successful close.
+- **The result is verifiable.** `verify` independently compares the source bag and the produced MKV; it does not trust the converter's own counters.
+
+No camera is required. `k4a_record_create(device = nullptr)` is enough to produce a valid K4A recording.
+
+---
+
+## Conversion matrix
+
+| # | Input | Output | Command | Status |
+|---|---|---|---|---|
+| 1 | Orbbec ROSBAG `#ROSBAG V2.0` | K4A-compatible MKV | `convert` | Available |
+| 2 | K4A MKV | Orbbec ROSBAG | `mkv2bag` | Available |
+| 3 | Orbbec ROSBAG | Standard ROS1 `.bag` | `ros1` | Available |
+| 4 | Orbbec ROSBAG | ROS2 sqlite3 bag directory | `ros2` | Available |
+| 5 | Standard ROS1 `.bag` | K4A-compatible MKV | `ros1mkv` | Available |
+| 6 | ROS2 sqlite3 bag directory | K4A-compatible MKV | `ros2mkv` | Available |
+| 7 | K4A MKV | ROS1 `.bag` | `mkv2ros1` | Available |
+| 8 | K4A MKV | ROS2 sqlite3 bag directory | `mkv2ros2` | Available |
+
+> `mkv2ros1` / `mkv2ros2` currently go through a temporary Orbbec bag. The output is correct; the extra disk I/O is a known implementation detail, not a format limitation.
+
+**Not a supported path:** arbitrary ROS image resolutions, IMU streams, or ROS2 MCAP storage. See [Limitations and roadmap](#limitations-and-roadmap).
+
+---
+
+## Lossless contract
+
+| Data | Guarantee | Implementation |
+|---|---|---|
+| Color | No JPEG/MPEG re-encode | Original MJPEG bytes copied to `ORIGINAL_COLOR_MJPG`; BGRA is a deterministic decode |
+| Depth | Bit-exact 16-bit values | Only LE → BE byte order is changed by the K4A writer |
+| IR | Bit-exact 16-bit values | `mono16` / `16UC1` written as K4A `IR16` |
+| Timestamps | Microsecond precision | K4A device timestamps in µs |
+| Frame identity | Preserved | `header.seq`, `frame_id`, frame `number`, raw metadata, `pixel_bit_size` |
+| Device metadata | Preserved where available | MKV attachments: calibration, profiles, properties, manifest/JSONL |
+| Output safety | No partial “success” | Write `.tmp`; remove on failure; rename after close |
+
+### A note on “lossless”
+
+Lossless means **no pixel re-encoding and no depth alteration** inside the supported container modes. K4A only accepts a fixed set of color/depth resolutions; inputs outside those modes are rejected instead of silently resized.
+
+For JPEG-compressed ROS color, `--color bgra` decodes to BGRA. Use `--color mjpg` when the compressed JPEG bitstream itself must be preserved in the K4A color track.
+
+---
+
+## Quick start
+
+### Windows release
+
+Download the latest Windows x64 package from the [Releases](https://github.com/Erik-Lin/bag2mkv/releases) page, unzip it, and run:
+
+```powershell
+.\bag2mkv.exe --version
+.\bag2mkv.exe --help
+```
+
+The package is self-contained apart from the bundled K4A/Orbbec runtime DLLs; VC++ runtime DLLs are included.
+
+### Build from source
+
+Requirements:
+
+- Windows 10/11 x64
+- Visual Studio 2022 (MSVC) with the Windows 10/11 SDK
+- CMake 3.16+
+- The repository's `azurekinectsdk/` directory (headers + `.lib` + runtime DLLs)
 
 ```powershell
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
@@ -23,212 +129,349 @@ cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-构建后会把 K4A 运行时 DLL 复制到 `build/Release/`，生成：
+Outputs:
 
-- `build\Release\bag2mkv.exe`：命令行。
-- `build\Release\bag2mkv-gui.exe`：GUI（没有控制台窗口）。
-
-## GUI 使用
-
-双击 `build\Release\bag2mkv-gui.exe`，只需要三步：
-
-1. 选择**输入目录**：目录及子目录中必须只包含 `.bag`，或只包含 `.mkv`；两种格式混在一起会直接报错。
-2. 选择**输出目录**：不会允许输出到输入目录内部，避免下次扫描混入另一种格式。
-3. 点击“开始转换”。
-
-程序会自动判断方向：
-
-- 输入全是 `.bag` → 批量生成 `.mkv`；
-- 输入全是 `.mkv` → 批量生成 `.bag`；
-- 子目录结构会保留到输出目录；
-- 单个文件失败不会中断其余文件，日志和进度在窗口中显示；
-- 可选勾选“覆盖已存在的输出文件”“转换后自动验证”，以及彩色模式。
-
-GUI 也支持命令行预填，方便脚本或“打开方式”：
-
-```powershell
-# 目录批量：自动识别 bag→mkv 或 mkv→bag
-.\build\Release\bag2mkv-gui.exe <输入目录> <输出目录> --start
-.\build\Release\bag2mkv-gui.exe --batch <输入目录> --batch-output <输出目录>
-
-# 单个文件仍可用
-.\build\Release\bag2mkv-gui.exe capture.bag capture.mkv --start
-.\build\Release\bag2mkv-gui.exe --to-bag capture.mkv --to-bag-output capture.bag
+```text
+build\Release\bag2mkv.exe
+build\Release\bag2mkv-gui.exe
 ```
 
-- `--mjpg`：bag→mkv 时预选 MJPEG 原码流。
-- `--start`：启动后自动开始。
-- `--batch <dir>` + `--batch-output <dir>`：直接进入目录批量，自动判断方向。
-
-## 命令行使用
-
-### 帮助
+### First conversions
 
 ```powershell
-.\build\Release\bag2mkv.exe --help
+# Inspect an Orbbec bag
+.\build\Release\bag2mkv.exe inspect capture.bag
+
+# Orbbec bag -> K4A MKV, preserving original JPEG and verifying
+.\build\Release\bag2mkv.exe convert capture.bag -o capture.mkv --color mjpg --verify
+
+# K4A MKV -> Orbbec bag
+.\build\Release\bag2mkv.exe mkv2bag capture.mkv -o capture_roundtrip.bag --force
+
+# Orbbec bag -> standard ROS1 bag
+.\build\Release\bag2mkv.exe ros1 capture.bag -o capture_ros1.bag --force
+
+# Orbbec bag -> ROS2 sqlite3 bag
+.\build\Release\bag2mkv.exe ros2 capture.bag -o capture_ros2 --force
+```
+
+---
+
+## Command line
+
+```text
+bag2mkv <command> [options]
+bag2mkv help <command>
+bag2mkv --version
+bag2mkv --self-test
+```
+
+| Command | Purpose |
+|---|---|
+| `inspect <bag>` | Show container, device, profiles, properties, frame counts, timestamps |
+| `convert <bag> -o <mkv>` | Orbbec bag → K4A MKV |
+| `batch <files-or-dir...> --output-dir <dir>` | Convert many bags |
+| `verify <bag> <mkv>` | Independently verify frames, timestamps, calibration |
+| `mkv2bag <mkv> -o <bag>` | K4A MKV → Orbbec bag |
+| `ros1 <bag> -o <bag>` | Orbbec bag → standard ROS1 bag |
+| `ros1mkv <bag> -o <mkv>` | Standard ROS1 bag → K4A MKV |
+| `ros2 <bag> -o <dir>` | Orbbec bag → ROS2 sqlite3 bag |
+| `ros2mkv <dir> -o <mkv>` | ROS2 sqlite3 bag → K4A MKV |
+| `mkv2ros1 <mkv> -o <bag>` | K4A MKV → ROS1 bag |
+| `mkv2ros2 <mkv> -o <dir>` | K4A MKV → ROS2 sqlite3 bag |
+
+Every command has detailed help:
+
+```powershell
 .\build\Release\bag2mkv.exe help convert
 .\build\Release\bag2mkv.exe help batch
 .\build\Release\bag2mkv.exe help mkv2bag
 .\build\Release\bag2mkv.exe help ros1
-.\build\Release\bag2mkv.exe help ros1mkv
 .\build\Release\bag2mkv.exe help ros2
-.\build\Release\bag2mkv.exe help ros2mkv
-.\build\Release\bag2mkv.exe help mkv2ros1
-.\build\Release\bag2mkv.exe help mkv2ros2
-.\build\Release\bag2mkv.exe help verify
-.\build\Release\bag2mkv.exe --version
 ```
 
-`convert --help` 包含全部选项、彩色模式、文件大小、标定说明、示例和退出码；`batch --help` 包含递归扫描、`--limit`、错误继续和输出命名规则；`mkv2bag --help` 包含反向转换的源轨道/manifest 规则。ROS 命令各有独立帮助。
+Common options:
 
-### 常用命令
-
-```powershell
-# 查看 bag 内容
-.\build\Release\bag2mkv.exe inspect .\20251111_143747_001_cam1_CL8R35300SH_gait.bag
-
-# 默认：BGRA 1080p + 原始 MJPEG 轨道，转换并验证
-.\build\Release\bag2mkv.exe convert .\20251111_143747_001_cam1_CL8R35300SH_gait.bag `
-    -o .\out.mkv --verify
-
-# 只保留原始 MJPEG（体积小，但 kinect-analyzer 不认 MJPG 彩色）
-.\build\Release\bag2mkv.exe convert .\...bag -o .\out_mjpg.mkv --color mjpg
-
-# 只要 BGRA、不要原始 MJPEG 轨道
-.\build\Release\bag2mkv.exe convert .\...bag -o .\out.mkv --no-original-color
-
-# 单独验证
-.\build\Release\bag2mkv.exe verify .\...bag .\out.mkv
-
-# 把 K4A MKV 转回 Orbbec bag
-.\build\Release\bag2mkv.exe mkv2bag .\out.mkv -o .\roundtrip.bag --force
-
-# 批量转换一个目录（默认递归扫描子目录，每个 bag 一个同名 mkv）
-.\build\Release\bag2mkv.exe batch .\recordings --output-dir .\mkv --verify
-
-# 只处理前 20 个（排序后），用于先试跑或分批处理
-.\build\Release\bag2mkv.exe batch .\recordings --output-dir .\mkv --color mjpg --limit 20
-
-# 批量时出错继续
-.\build\Release\bag2mkv.exe batch .\recordings --output-dir .\mkv --color mjpg --continue-on-error
+```text
+--color bgra|mjpg       Color representation (default: bgra)
+--no-original-color     Omit ORIGINAL_COLOR_MJPG in BGRA mode
+--no-calibration        Do not write calibration.json
+--calibration-json FILE Use a known-good K4A calibration
+--force                 Overwrite an existing output
+--verify                Verify immediately after convert
 ```
 
-常用选项：
+Exit codes: `0` success, `1` conversion/verification failure, `2` usage error, `3` cancelled.
 
-- `--color bgra|mjpg`：彩色输出格式，默认 `bgra`。
-- `--no-original-color`：BGRA 输出时不再附加 `ORIGINAL_COLOR_MJPG` 轨道，输出约 12.3 GB。
-- `--force`：覆盖已存在的输出。
-- `--no-calibration`：不写 `calibration.json`。
-- `--calibration-json <file>`：使用同设备/同模式的参考 K4A 标定。
-- `--verify`：转换后立即逐帧验证。
-- `--no-recursive`：批量时只扫描目录顶层；默认递归子目录。
-- `--limit <n>`：批量只处理排序后的前 n 个输入。
+---
 
-批量输出统一放在 `--output-dir` 下，按输入文件 stem 命名；不同子目录中存在同名 bag 会报“duplicate output name”，不会静默覆盖。批量开始前还会用输入 bag 大小做一次总量预检，空间明显不足时直接停止，避免扫描/转换到一半才失败。
+## ROS 1 / ROS 2
 
-退出码：`0` 成功，`1` 转换/验证失败，`2` 用法错误，`3` 用户取消。
+ROS conversion is deliberately **format-level**: you do not need a ROS installation, `rosbag`, `rosbag2_cpp`, or `rclcpp` on the conversion machine.
 
-转换开始前会按帧数/彩色模式估算输出大小并检查输出磁盘可用空间；空间不足会在写入前报错，不会先删除已有输出文件。
+### Topics and message types
 
-## ROS1 / ROS2 双向转换
+| Topic | Message | Payload |
+|---|---|---|
+| `/camera/color/image_raw/compressed` | `sensor_msgs/CompressedImage` | Original JPEG bytes, `format: jpeg` |
+| `/camera/color/image_raw` | `sensor_msgs/Image` | Raw color (e.g. `rgb8`, `bgr8`, `bgra8`) |
+| `/camera/depth/image_raw` | `sensor_msgs/Image` | `16UC1`, little-endian |
+| `/camera/ir/image_raw` | `sensor_msgs/Image` | `16UC1`, little-endian |
 
-ROS 路径与 K4A MKV 路径并列，Windows CLI 可用；GUI 目前仍只做 Orbbec bag ↔ MKV。
+### ROS1 output
+
+`ros1` writes a standard ROSBAG V2.0 stream with:
+
+- split connection records (`op=7`) as required by ROS1,
+- per-connection index data (`op=4`),
+- chunk-info records (`op=6`),
+- ROS time fields in message and chunk headers.
+
+The result can be inspected by standard ROS1 tooling and by `rosbags.rosbag1.Reader`.
+
+### ROS2 output
+
+`ros2` creates a normal rosbag2 directory:
+
+```text
+capture_ros2/
+├─ metadata.yaml
+└─ bag_0.db3
+```
+
+Messages use CDR with `sensor_msgs/msg/Image` and `sensor_msgs/msg/CompressedImage`. The SQLite driver is vendored; no system SQLite installation is needed.
+
+### Resolution constraints
+
+K4A recordings only support these modes:
+
+| Stream | Supported dimensions |
+|---|---|
+| Color | 1920×1080, 1280×720, 3840×2160, 2560×1440, 2048×1536, 4096×3072 |
+| Depth / IR | 640×576, 320×288, 512×512, 1024×1024 |
+
+ROS bags with other dimensions are rejected with a clear error. `bag2mkv` does not silently resize or crop.
+
+This matters for common RealSense recordings: a 640×480 color / 1280×720 depth bag is a valid ROS1 bag, but it cannot be represented directly as a K4A MKV. A lossy resize mode is intentionally not enabled by default.
+
+### Lossless notes for ROS
+
+- **Orbbec → ROS1/ROS2:** compressed color keeps the original JPEG bytes; raw color and depth are written without transcoding.
+- **ROS1/ROS2 → K4A MKV:** `--color mjpg` keeps `CompressedImage` JPEG bytes; the default `--color bgra` decodes them to BGRA.
+- **CameraInfo:** currently not converted into K4A calibration. K4A playback may warn about missing calibration for ROS-sourced MKVs.
+- **ROS2 storage:** sqlite3 is supported; MCAP is not yet implemented.
+
+### K4A MKV → ROS
 
 ```powershell
-# Orbbec bag -> 标准 ROS1 bag
-.\build\Release\bag2mkv.exe ros1 capture.bag -o capture_ros1.bag --force
-
-# 标准 ROS1 bag -> K4A MKV
-.\build\Release\bag2mkv.exe ros1mkv capture_ros1.bag -o capture.mkv --force
-
-# Orbbec bag -> ROS2 sqlite3 bag 目录
-.\build\Release\bag2mkv.exe ros2 capture.bag -o capture_ros2 --force
-
-# ROS2 sqlite3 bag 目录 -> K4A MKV
-.\build\Release\bag2mkv.exe ros2mkv capture_ros2 -o capture.mkv --force
-
-# K4A MKV -> ROS1 / ROS2
 .\build\Release\bag2mkv.exe mkv2ros1 capture.mkv -o capture_ros1.bag --force
 .\build\Release\bag2mkv.exe mkv2ros2 capture.mkv -o capture_ros2 --force
 ```
 
-- ROS1 输出：标准 `#ROSBAG V2.0`，带 connection、index data、chunk-info；彩色 MJPEG 写为 `sensor_msgs/CompressedImage`，深度/IR 写为 `Image`（`16UC1`）。
-- ROS2 输出：`metadata.yaml` + `bag_0.db3`（SQLite3），消息使用 CDR；topic/type 与 ROS1 路径一致。
-- ROS1/ROS2 输入：支持 `sensor_msgs/Image`（`rgb8`、`bgr8`、`bgra8`、`mono8`、`16UC1`/`mono16`）和 `CompressedImage`（JPEG）。
-- K4A 只接受固定分辨率：彩色 1920×1080、1280×720、3840×2160、2560×1440、2048×1536、4096×3072；深度/IR 640×576、320×288、512×512、1024×1024。其他尺寸会明确拒绝，不会静默缩放。
-- `mkv2ros1` / `mkv2ros2` 目前先经过一个临时 Orbbec bag（复用 `mkv2bag` + 导出器），功能正确但会多一次磁盘 I/O；后续可改为直接 K4A playback 导出。
-- ROS2 的 SQLite 源码已 vendor 到 `third_party/sqlite/`（public domain），Windows 构建不需要系统 SQLite。
+These commands first rebuild an Orbbec bag with `mkv2bag`, then run the corresponding exporter. This preserves the tested reverse path and all image data, at the cost of a temporary file.
 
-## MKV 转回 bag（mkv2bag）
+---
 
-```powershell
-.\build\Release\bag2mkv.exe mkv2bag .\capture.mkv
-.\build\Release\bag2mkv.exe mkv2bag .\capture.mkv -o .\capture_roundtrip.bag --force
+## GUI
+
+`bag2mkv-gui.exe` is a native Win32 GUI, not a web wrapper.
+
+```text
+Input directory  +  Output directory  +  Start
 ```
 
-反向转换：
+- Scans `.bag` / `.mkv` recursively.
+- Detects direction: all bags → MKV; all MKVs → Orbbec bag.
+- Rejects directories mixing both formats.
+- Mirrors subdirectories into the output directory.
+- Keeps going when one file fails; progress, cancellation, and log are in the window.
+- Supports overwrite confirmation, optional post-conversion verification, and color mode.
 
-- 优先读取 `orbbec_manifest.json` 和 `orbbec_frames.jsonl`，恢复设备、stream profile、47 条 property、帧号/时间戳/metadata。
-- 如果存在 `ORIGINAL_COLOR_MJPG` 自定义轨道，彩色 JPEG 字节原样复制，不重新编码。
-- 没有源轨道时：MJPG COLOR 轨原样复制；BGRA COLOR 轨写成 `bgra8` 原始数据。
-- 深度/IR 写成 `mono16` 原始数据；时间戳、header seq/frame_id、metadata、pixel_bit_size 尽量按 manifest 恢复。
-- 输出是 LZ4 压缩的 ROSBAG V2.0，带 connection/chunk-info；样本约 797 MB。
-- 对没有 manifest 的普通 K4A MKV，仍可从 tag 恢复设备序列号并转换图像，但没有原始 profile/property/标定来源信息。
+The GUI currently covers **Orbbec bag ↔ K4A MKV** only. ROS conversion is CLI-only in v0.5.0.
 
-## 输出结构（默认 BGRA）
+```powershell
+.\build\Release\bag2mkv-gui.exe
+.\build\Release\bag2mkv-gui.exe <input-dir> <output-dir> --start
+.\build\Release\bag2mkv-gui.exe --batch <input-dir> --batch-output <output-dir> --mjpg
+.\build\Release\bag2mkv-gui.exe --to-bag <input.mkv> --to-bag-output <output.bag>
+```
 
-- `COLOR`：`BGRA_1080P`，1920×1080，8,294,400 B/帧。
-- `ORIGINAL_COLOR_MJPG`：自定义轨道，原始 JPEG 字节流逐帧保存（CodecID `V_MS/VFW/FOURCC`, `MJPG`）。
-- `DEPTH`：`NFOV_UNBINNED`，640×576，`b16g`。
-- `IR`：有 IR 帧时写 `IR16`；样本无 IR，因此默认是空轨。
-- `calibration.json`：默认从 stream profile 合成；见下方限制。
-- `orbbec_manifest.json`：设备、流、属性、帧统计、彩色输出模式。
-- `orbbec_frames.jsonl`：逐帧时间戳、帧号、metadata、原始 JPEG payload SHA-256。
-- `orbbec_prop_*.bin`：原始标定/属性 blob。
+---
 
-## 播放器兼容性
+## Architecture
 
-kinect-analyzer 的 `ImageProcessor::convertK4AColorToQImage()` / `SyncPlaybackManager::convertK4AColorToQImage()` 只对 `K4A_IMAGE_FORMAT_COLOR_BGRA32` 做正确处理；其他格式会按每行 `width*4` 字节读取，MJPG 码流会被越界误读。因此本工具默认把彩色解码成 BGRA 1080p，同时用自定义轨道保留原始 MJPEG。K4A playback API 与 kinect-analyzer 的 `PlaybackSession` 使用同一条读取路径。
+```mermaid
+flowchart LR
+    OB[Orbbec ROSBAG] --> MKV[K4A MKV]
+    OB --> R1[ROS1 bag]
+    OB --> R2[ROS2 bag2]
+    R1 --> MKV
+    R2 --> MKV
+    MKV -. temporary Orbbec bag .-> R1
+    MKV -. temporary Orbbec bag .-> R2
+```
 
-## 标定限制
+The core is plain C++17 and shared by CLI and GUI:
 
-`calibration.json` 的默认版本由 `OBStreamProfileInfo` 合成。深度按 K4A 的 1024×1024 原始传感器模型、彩色按 4096×3072/4:3 模型，经过 K4A 的 mode-specific crop/scale 后，内参与 bag profile 完全一致（已用 `k4a_playback_get_calibration` 验证）。畸变系数和 depth→color 外参还没有做逐点投影验证；要做严格点云/对齐，建议用 `--calibration-json` 传入同设备、同模式的 K4A 录制中的 `calibration.json`。
+```text
+src/
+  bag.cpp / bag_writer.cpp     Orbbec ROSBAG reader/writer
+  k4a_writer.cpp               K4A recording writer
+  converter.cpp                shared scan / convert / verify pipeline
+  mkv2bag.cpp                  K4A playback → Orbbec bag
+  ros1_export.cpp              Orbbec bag → standard ROS1 bag
+  ros1_input.cpp               standard ROS1 bag → K4A MKV
+  ros2_export.cpp              Orbbec bag → ROS2 sqlite3/CDR
+  ros2_input.cpp               ROS2 sqlite3/CDR → K4A MKV
+  gui_win32.cpp                native Windows GUI
+third_party/                   LZ4, bzip2, SQLite
+```
 
-当前版本不支持 IMU；为了让 K4A 能解析相机标定，`calibration.json` 里包含 gyro/accel 的零占位 entry，不应作为真实 IMU 标定使用。
+More detailed format notes and invariants live in [AGENTS.md](AGENTS.md).
 
-## 当前版本限制
+---
 
-- 输入：Orbbec SDK v2 的 `#ROSBAG V2.0`，支持 LZ4 / BZ2 / 未压缩 chunk。
-- 支持 MJPG 1080p（以及 1440p/1536p/2160p/3072p）和深度 NFOV/WFOV 常见模式。
-- 暂不支持 IMU 流；IR 已支持（`mono16` → K4A `IR16`），没有独立 IR profile 时标定仍来自 stream profile/`calibration.json`。
-- K4A 输出依赖 `azurekinectsdk/` 的 `k4a.dll` / `k4arecord.dll`，GUI 还依赖 Windows 自带的 Common Controls。
-- BGRA 1080p 输出体积很大；这是为了旧播放器兼容而做的解码，不是有损重编码。
-- GUI 当前为 Windows 原生界面；不提供 macOS/Linux GUI。
+## Format notes
 
-## 无损约定
+### Orbbec ROSBAG
 
-- 原始 MJPEG 字节流原样保存在 `ORIGINAL_COLOR_MJPG`；BGRA 只是同一 JPEG 的确定性解码结果，没有额外有损处理。
-- `--color mjpg` 时彩色只复制原码流，不做任何解码/重编码。
-- 不做深度滤波、对齐、缩放或单位换算。
-- 验证：BGRA 模式下逐像素比对 bag JPEG 解码结果；MJPG 模式下逐帧 SHA-256 比对；同时校验 `ORIGINAL_COLOR_MJPG` 的原始 JPEG 哈希。
-- 输出先写 `.tmp`，成功后再 rename；取消或失败会删除临时文件。
+The Orbbec `.bag` is `#ROSBAG V2.0`, but it is **not** a plain ROS bag:
 
-## 贡献
+- connection records are split across two headers;
+- message records have no `data=` field;
+- chunks can be LZ4, BZ2, or uncompressed;
+- the chunk header's `size` is not always the real uncompressed size.
 
-欢迎社区一起完善 `bag2mkv`！无论是 bug 报告、播放器兼容性反馈、文档改进，还是 IR/IMU、标定、测试和性能优化，都非常欢迎。
+These details are handled by the native reader.
 
-- 提交 Issue / Pull Request 前请先读 [CONTRIBUTING.md](CONTRIBUTING.md)。
-- 改格式相关代码前请读 [AGENTS.md](AGENTS.md) 的无损契约（第 2–4 节）。
-- 请勿在 Issue/PR 中上传未脱敏的受试者数据或几百 MB 的 bag；提供最小复现信息和日志即可。
-- 本项目使用 MIT License，欢迎 fork、使用和贡献。
+### K4A MKV
 
-特别欢迎的方向：IR/IMU 支持、更多 Orbbec 设备和固件实测、标定畸变/D2C 外参逐点验证、不同 K4A 播放器兼容性测试、CI 和文档翻译。
+A K4A recording is a Matroska container with Kinect-specific tracks and tags, not a normal video file:
 
-## 许可证
+- `COLOR` — BGRA or MJPEG;
+- `DEPTH` — `b16g`, big-endian on disk;
+- `IR` — `IR16`;
+- `ORIGINAL_COLOR_MJPG` — optional custom track with original JPEG bytes;
+- attachments — calibration, manifest, frame JSONL, raw profile/property blobs.
 
-本项目使用 **MIT License**，版权归 **林山力** 所有。完整文本见 [LICENSE](LICENSE)。
+### ROS
 
-`third_party/lz4/` 使用其自身的 BSD 2-Clause License，见 [third_party/lz4/LICENSE](third_party/lz4/LICENSE)。
-`third_party/bzip2/` 使用其自身的 BSD-like License，见 [third_party/bzip2/COPYING](third_party/bzip2/COPYING)。
-`third_party/sqlite/` 是 SQLite 3.46.1 amalgamation，public domain，见 [third_party/sqlite/README.txt](third_party/sqlite/README.txt)。
-`azurekinectsdk/` 是 Orbbec 提供的预编译运行时，遵循其自带许可/条款。
+- ROS1: standard ROSBAG V2.0, with index data and chunk info.
+- ROS2: `metadata.yaml` + `bag_0.db3`, CDR serialization.
+
+---
+
+## Verification
+
+```powershell
+# Fast internal checks
+.\build\Release\bag2mkv.exe --self-test
+ctest --test-dir build -C Release --output-on-failure
+
+# Frame-level verification of a converted MKV
+.\build\Release\bag2mkv.exe verify capture.bag capture.mkv
+```
+
+What `verify` checks:
+
+- color pixels against the deterministic JPEG decode;
+- original JPEG SHA-256 against the source bag;
+- depth values after big-endian → little-endian conversion;
+- device timestamps;
+- frame counts and stream lengths;
+- calibration intrinsics when `calibration.json` is present.
+
+Current test coverage includes 10 CTest cases, synthetic Orbbec/ROS fixtures, and independent `rosbags`-generated ROS2 CDR fixtures. Real-device recordings should still be verified on the machine that will consume them.
+
+---
+
+## Limitations and roadmap
+
+### Known limitations
+
+- **Windows only for now.** The CLI, K4A writer, WIC JPEG decoder, BCrypt SHA-256, and Win32 GUI are Windows-specific. A Linux CLI port needs libjpeg/OpenSSL (or portable replacements), Linux K4A/Orbbec `.so` files, and a non-Win32 build path.
+- **GUI does not expose ROS.** ROS 1/2 is CLI-only in v0.5.0.
+- **No arbitrary resolution mode.** K4A's fixed modes are enforced; no implicit resize/crop.
+- **No CameraInfo → K4A calibration synthesis yet.** ROS-sourced MKVs may lack calibration.
+- **No IMU stream yet.** The sample device used during development had no IMU recording.
+- **ROS2 sqlite3 only.** MCAP storage is not implemented.
+- **`mkv2ros1/2` uses a temporary Orbbec bag.** Correct, but slower than a direct K4A playback export.
+
+### Roadmap
+
+- [ ] Linux CLI build and packaging (Ubuntu 20.04/22.04-compatible).
+- [ ] Direct K4A playback → ROS1/ROS2 export without the temporary bag.
+- [ ] GUI support for ROS1/ROS2 directions.
+- [ ] Optional explicit `--allow-resize` mode for non-K4A ROS resolutions, clearly marked lossy.
+- [ ] CameraInfo → K4A calibration synthesis.
+- [ ] IMU track support.
+- [ ] More real-device round-trip tests.
+
+---
+
+## FAQ
+
+### Is the output really lossless?
+
+For supported modes, color is not re-encoded, depth/IR are bit-exact, and metadata is preserved. For JPEG-compressed ROS input, the default BGRA mode decodes color; use `--color mjpg` to keep the JPEG bitstream. K4A's fixed resolutions are a hard constraint, not a quality setting.
+
+### Why is the default output so large?
+
+BGRA 1080p is about 8.3 MB per color frame, before depth. A 45-second recording can exceed 12 GB. Use `--color mjpg` for a much smaller K4A file when the player supports MJPG.
+
+### Does it need an Azure Kinect device?
+
+No. The writer creates recordings with a null device and writes images from the source bag.
+
+### Does it need ROS installed?
+
+No. ROS1/ROS2 containers are read and written directly by `bag2mkv`.
+
+### Can I convert a RealSense ROS1 bag to MKV?
+
+Only if its color/depth dimensions match a K4A mode. A 640×480 / 1280×720 RealSense recording is rejected rather than silently resized.
+
+### Does it support BZ2 bags?
+
+Yes. Orbbec chunks with `compression=bz2` are decompressed with the vendored bzip2 1.0.8.
+
+### Can I run it on Linux?
+
+Not yet. Linux CLI is the next platform milestone; the Windows release is the only prebuilt package in v0.5.0.
+
+---
+
+## Contributing
+
+Contributions are welcome: bug reports, real-device recordings (with permission), player compatibility reports, format documentation, and tests.
+
+- Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR.
+- Read the lossless contract in [AGENTS.md](AGENTS.md) before changing format code.
+- Keep test recordings out of issues and pull requests; provide a minimal reproduction and logs instead.
+- One focused change per pull request.
+
+Good first areas: Linux CLI port, ROS CameraInfo/calibration, direct MKV → ROS export, additional K4A player compatibility tests.
+
+---
+
+## License
+
+MIT License. Copyright © 林山力.
+
+- [LICENSE](LICENSE)
+- LZ4: [third_party/lz4/LICENSE](third_party/lz4/LICENSE)
+- bzip2: [third_party/bzip2/COPYING](third_party/bzip2/COPYING)
+- SQLite: [third_party/sqlite/README.txt](third_party/sqlite/README.txt)
+- Orbbec K4A runtime: follow the upstream Orbbec SDK license/terms.
+
+---
+
+## Repository description
+
+**Short GitHub description:**
+
+> Lossless RGB-D conversion between Orbbec ROSBAG, Azure Kinect MKV, and ROS 1/2 bags — with a Windows CLI and GUI.
+
+**Long description:**
+
+> `bag2mkv` is a lossless, verifiable RGB-D conversion toolkit. It converts Orbbec ROSBAG recordings to Azure Kinect-compatible MKV, rebuilds Orbbec bags from K4A MKV, and imports/exports standard ROS1 and ROS2 bags. It preserves original JPEG color, bit-exact depth, timestamps, and device metadata, and includes an independent verifier. The Windows release ships both a CLI and a native GUI; ROS conversion is available from the command line.
