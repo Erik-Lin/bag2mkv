@@ -344,9 +344,7 @@ k4a_depth_mode_t depth_mode_for(uint32_t w, uint32_t h) {
     throw std::runtime_error("unsupported ROS depth resolution: " + std::to_string(w) + "x" + std::to_string(h));
 }
 
-std::vector<uint8_t> to_bgra(const ImageFrame &frame, const uint8_t *data, size_t size) {
-    if (frame.width == 0 || frame.height == 0) throw std::runtime_error("ROS image has zero dimensions");
-    std::vector<uint8_t> out(static_cast<size_t>(frame.width) * frame.height * 4);
+std::vector<uint8_t> to_bgra(const ImageFrame &frame, const uint8_t *data, size_t size) {    if (frame.width == 0 || frame.height == 0) throw std::runtime_error("ROS image has zero dimensions");    std::vector<uint8_t> out(static_cast<size_t>(frame.width) * frame.height * 4);
     if (frame.encoding == "bgra8") {
         if (size < out.size()) throw std::runtime_error("bgra8 frame is too small");
         std::memcpy(out.data(), data, out.size());
@@ -377,6 +375,17 @@ std::vector<uint8_t> to_bgra(const ImageFrame &frame, const uint8_t *data, size_
     }
     return out;
 }
+
+struct TempFileGuard {
+    fs::path path;
+    bool keep = false;
+    ~TempFileGuard() {
+        if (!keep) {
+            std::error_code error;
+            fs::remove(path, error);
+        }
+    }
+};
 
 }  // namespace
 
@@ -448,6 +457,7 @@ Ros1InputSummary convert_ros1_to_mkv(const Ros1InputOptions &options, const Ros1
     const fs::path output(options.output_mkv);
     const fs::path temp = fs::path(output.string() + ".tmp");
     fs::remove(temp);
+    TempFileGuard temp_guard{temp};
     {
         K4aWriter writer(temp.string(), config);
         writer.write_header();
@@ -500,6 +510,7 @@ Ros1InputSummary convert_ros1_to_mkv(const Ros1InputOptions &options, const Ros1
         summary.mkv_size = fs::file_size(temp);
         if (fs::exists(output)) fs::remove(output);
         fs::rename(temp, output);
+        temp_guard.keep = true;
         return summary;
     }
 }

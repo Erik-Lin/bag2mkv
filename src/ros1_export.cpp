@@ -107,6 +107,17 @@ std::string lower(std::string value) {
     return value;
 }
 
+struct TempFileGuard {
+    fs::path path;
+    bool keep = false;
+    ~TempFileGuard() {
+        if (!keep) {
+            std::error_code error;
+            fs::remove(path, error);
+        }
+    }
+};
+
 }  // namespace
 
 Ros1ExportSummary export_ob_bag_to_ros1(const Ros1ExportOptions &options, const Ros1ExportLog &log) {
@@ -135,7 +146,10 @@ Ros1ExportSummary export_ob_bag_to_ros1(const Ros1ExportOptions &options, const 
         color != nullptr && (lower(color->encoding) == "mjpg" || lower(color->encoding) == "jpeg");
     std::map<std::string, uint32_t> conn_ids;
     uint32_t next_id = 0;
-    BagWriter writer((output.string() + ".tmp"), BagFlavor::Ros1);
+    const fs::path temp = fs::path(output.string() + ".tmp");
+    fs::remove(temp);
+    TempFileGuard temp_guard{temp};
+    BagWriter writer(temp.string(), BagFlavor::Ros1);
     if (color != nullptr) {
         conn_ids["COLOR"] = next_id++;
         if (color_compressed) {
@@ -191,7 +205,8 @@ Ros1ExportSummary export_ob_bag_to_ros1(const Ros1ExportOptions &options, const 
         {}});
     writer.close();
     if (fs::exists(output)) fs::remove(output);
-    fs::rename(output.string() + ".tmp", output);
+    fs::rename(temp, output);
+    temp_guard.keep = true;
     summary.bag_size = fs::file_size(output);
     return summary;
 }

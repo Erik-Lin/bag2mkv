@@ -194,6 +194,17 @@ fs::path find_database(const fs::path &dir) {
     return dbs.front();
 }
 
+struct TempFileGuard {
+    fs::path path;
+    bool keep = false;
+    ~TempFileGuard() {
+        if (!keep) {
+            std::error_code error;
+            fs::remove(path, error);
+        }
+    }
+};
+
 }  // namespace
 
 Ros2InputSummary convert_ros2_to_mkv(const Ros2InputOptions &options, const Ros2InputLog &log) {
@@ -300,6 +311,7 @@ Ros2InputSummary convert_ros2_to_mkv(const Ros2InputOptions &options, const Ros2
     const fs::path output(options.output_mkv);
     const fs::path temp = fs::path(output.string() + ".tmp");
     fs::remove(temp);
+    TempFileGuard temp_guard{temp};
     {
         K4aWriter writer(temp.string(), config);
         writer.write_header();
@@ -352,6 +364,7 @@ Ros2InputSummary convert_ros2_to_mkv(const Ros2InputOptions &options, const Ros2
         summary.mkv_size = fs::file_size(temp);
         if (fs::exists(output)) fs::remove(output);
         fs::rename(temp, output);
+        temp_guard.keep = true;
         return summary;
     }
 }
