@@ -19,7 +19,7 @@
   <img alt="ROS" src="https://img.shields.io/badge/ROS-1%20%7C%202-22314E">
 </p>
 
-> **v0.6.0** — Windows x64 CLI + GUI; Linux x86_64 CLI. ROS 1/2 conversion is available from the CLI on both platforms.
+> **v0.6.0** — Windows x64 CLI + GUI; Linux x86_64 CLI. All eight conversion paths are available in the Windows GUI and in both CLIs.
 > The GUI is Windows-only.
 
 `bag2mkv` is a focused, verifiable conversion toolkit for RGB-D recordings. It does **not** re-encode color, filter depth, align streams, or pretend a generic video muxer is a Kinect recorder. It preserves what the source actually contains, and gives you a way to prove it.
@@ -75,6 +75,8 @@ No camera is required. `k4a_record_create(device = nullptr)` is enough to produc
 | 8 | K4A MKV | ROS2 sqlite3 bag directory | `mkv2ros2` | Available |
 
 > `mkv2ros1` / `mkv2ros2` currently go through a temporary Orbbec bag. The output is correct; the extra disk I/O is a known implementation detail, not a format limitation.
+
+Every path in this matrix is available in the Windows GUI. Unsupported input/target combinations are disabled automatically instead of failing after the user clicks Convert.
 
 **Not a supported path:** arbitrary ROS image resolutions, IMU streams, or ROS2 MCAP storage. See [Limitations and roadmap](#limitations-and-roadmap).
 
@@ -309,27 +311,29 @@ These commands first rebuild an Orbbec bag with `mkv2bag`, then run the correspo
 
 ## GUI
 
-`bag2mkv-gui.exe` is a native Win32 GUI, not a web wrapper.
+`bag2mkv-gui.exe` is a native Win32 conversion studio, not a web wrapper.
 
-```text
-Input directory  +  Output directory  +  Start
-```
+It has three views: **Single conversion**, **Batch workspace**, and **About**. The source card accepts `.bag`, `.mkv`, and ROS 2 bag folders; the output segment lets you choose K4A MKV, ROS 1 bag, ROS 2 bag, or Orbbec bag. Targets that cannot represent the current input are disabled.
 
-- Scans `.bag` / `.mkv` recursively.
-- Detects direction: all bags → MKV; all MKVs → Orbbec bag.
-- Rejects directories mixing both formats.
-- Mirrors subdirectories into the output directory.
-- Keeps going when one file fails; progress, cancellation, and log are in the window.
-- Supports overwrite confirmation, optional post-conversion verification, and color mode.
-
-The GUI currently covers **Orbbec bag ↔ K4A MKV** only. ROS conversion is CLI-only in v0.6.0.
+- Auto-detects Orbbec ROSBAG, standard ROS 1, ROS 2 sqlite3, and K4A MKV.
+- Single-file and recursive folder batch modes.
+- Mirrors the input subdirectory structure into the output folder.
+- Drag and drop, native file/folder pickers, keyboard-friendly controls.
+- Color BGRA/MJPEG, verify, overwrite, original-JPEG preservation, calibration JSON, and skip-calibration options.
+- Live stage/progress, cancel, timestamped activity log, and “open output”.
+- Batch continues after a failed file and reports a success/failure summary.
+- Command-line prefill for automation.
 
 ```powershell
 .\build\Release\bag2mkv-gui.exe
-.\build\Release\bag2mkv-gui.exe <input-dir> <output-dir> --start
-.\build\Release\bag2mkv-gui.exe --batch <input-dir> --batch-output <output-dir> --mjpg
-.\build\Release\bag2mkv-gui.exe --to-bag <input.mkv> --to-bag-output <output.bag>
+.\build\Release\bag2mkv-gui.exe capture.bag
+.\build\Release\bag2mkv-gui.exe capture.bag --target ros1 --start
+.\build\Release\bag2mkv-gui.exe capture.mkv --target ros2 --start
+.\build\Release\bag2mkv-gui.exe --batch .\recordings --output .\converted --target k4a --start
+.\build\Release\bag2mkv-gui.exe --about
 ```
+
+`--target` accepts `k4a`/`mkv`, `ros1`, `ros2`, or `orbbec`/`bag`. `--start` begins immediately; `--output` supplies a destination for batch or single-file runs.
 
 ---
 
@@ -359,6 +363,7 @@ src/
   ros2_export.cpp              Orbbec bag → ROS2 sqlite3/CDR
   ros2_input.cpp               ROS2 sqlite3/CDR → K4A MKV
   gui_win32.cpp                native Windows GUI
+  gui_backend.cpp              GUI detection, job building, conversion dispatch
 third_party/                   LZ4, bzip2, SQLite
 ```
 
@@ -426,7 +431,6 @@ Current test coverage includes 10 CTest cases, synthetic Orbbec/ROS fixtures, an
 
 - **The GUI is Windows-only.** The CLI, including ROS1/ROS2 conversion, is available on Windows and Linux.
 - **Linux is CLI-only.** There is no Linux GUI; the native Win32 GUI is not portable.
-- **GUI does not expose ROS.** ROS 1/2 is CLI-only in v0.6.0.
 - **No arbitrary resolution mode.** K4A's fixed modes are enforced; no implicit resize/crop.
 - **No CameraInfo → K4A calibration synthesis yet.** ROS-sourced MKVs may lack calibration.
 - **No IMU stream yet.** The sample device used during development had no IMU recording.
@@ -438,7 +442,6 @@ Current test coverage includes 10 CTest cases, synthetic Orbbec/ROS fixtures, an
 
 - [ ] Native Linux packages (`.deb`, AppImage) and broader distro testing.
 - [ ] Direct K4A playback → ROS1/ROS2 export without the temporary bag.
-- [ ] GUI support for ROS1/ROS2 directions.
 - [ ] Optional explicit `--allow-resize` mode for non-K4A ROS resolutions, clearly marked lossy.
 - [ ] CameraInfo → K4A calibration synthesis.
 - [ ] IMU track support.

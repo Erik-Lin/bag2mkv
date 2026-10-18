@@ -3,6 +3,10 @@
 ## 0.6.0
 
 - 新增 Linux x86_64 CLI 支持：CMake 在非 Windows 平台构建 `bag2mkv`，不构建 Win32 GUI。
+- 重构 Windows GUI：深色三视图工作台（单文件 / 批量 / 关于）、卡片式布局、自绘按钮与分段选择器、状态徽章、实时进度与时间戳日志。
+- GUI 支持全部八条转换路径：Orbbec ↔ K4A、Orbbec → ROS1/ROS2、ROS1/ROS2 → K4A、K4A → ROS1/ROS2。
+- GUI 支持自动识别输入、递归批量、子目录镜像、拖放、彩色/验证/覆盖/标定选项、取消与输出目录。
+- GUI 增加 `--batch`、`--output`、`--target`、`--start`、`--about` 命令行预填。
 - Linux JPEG 解码改用 vendored `stb_image`；SHA-256 使用内置实现，移除 WIC/BCrypt 依赖。
 - Linux 构建/运行使用 Orbbec K4A Wrapper Linux SDK；发布包附带 `libk4a`、`libk4arecord`、`libOrbbecSDK`、`libdepthengine` 和启动 wrapper。
 - README 更新为 Windows CLI+GUI、Linux CLI；新增 Linux 构建、运行要求和限制说明。

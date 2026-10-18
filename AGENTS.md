@@ -46,13 +46,14 @@ Orbbec SDK v2 源码（`OrbbecSDK_v2-main/`）和 Body Tracking SDK（`azurekine
 .\build\Release\bag2mkv.exe mkv2ros2 <input.mkv> -o <output-dir> [--force]
 .\build\Release\bag2mkv.exe --version
 .\build\Release\bag2mkv.exe --self-test
-.\build\Release\bag2mkv-gui.exe [input-dir] [output-dir] [--mjpg] [--start]
-.\build\Release\bag2mkv-gui.exe --batch <input-dir> --batch-output <output-dir> [--mjpg]
-.\build\Release\bag2mkv-gui.exe --to-bag <input.mkv> [--to-bag-output <output.bag>]
+.\build\Release\bag2mkv-gui.exe [input] [--target k4a|ros1|ros2|orbbec] [--output <path>] [--start]
+.\build\Release\bag2mkv-gui.exe --batch <input-dir> --output <output-dir> [--target ...] [--start]
+.\build\Release\bag2mkv-gui.exe --about
 ```
 
-GUI 与 CLI 共用 `bag2mkv_core`：输入目录/输出目录、自动判断 bag→mkv 或 mkv→bag、递归批量、彩色模式、自动验证、
-覆盖确认、进度、取消、日志、打开输出目录。输入目录必须只含一种格式；子目录会镜像到输出目录。
+GUI 与 CLI 共用 `bag2mkv_core`：输入目录/输出目录、自动判断方向、递归批量、彩色模式、自动验证、
+覆盖确认、进度、取消、日志、打开输出目录。GUI 现在支持全部八条转换路径（单文件/批量/关于三视图），
+输入支持 Orbbec/标准 ROS1/ROS2/K4A，输出目标会按输入自动启用或禁用。
 
 样本 bag 已跑通：
 
@@ -70,7 +71,7 @@ GUI 与 CLI 共用 `bag2mkv_core`：输入目录/输出目录、自动判断 bag
   - color `1920x1080 fx=1118.69 fy=1118.11 cx=963.672 cy=535.888`
 - K4A playback 的彩色是 `BGRA` 1920×1080，深度是 `DEPTH16` 小端。
 - ROS1/ROS2 已通过合成样本验证：Orbbec bag → standard ROS1（含 index data）→ MKV；Orbbec bag → ROS2 sqlite3/CDR → MKV；K4A MKV → ROS1/ROS2。真实 RealSense `outdoors_1color.bag` 可解析，但其 640×480 彩色 / 1280×720 深度不满足 K4A 固定分辨率，输入路径会明确拒绝。
-- GUI 仍只处理 Orbbec bag ↔ K4A MKV；ROS 命令是 CLI。`mkv2ros1/2` 目前先写临时 Orbbec bag 再导出，功能正确但多一次磁盘 I/O。
+- GUI 支持全部八条转换路径（单文件/批量/关于三视图）；ROS 命令也仍有 CLI。`mkv2ros1/2` 目前先写临时 Orbbec bag 再导出，功能正确但多一次磁盘 I/O。
 - Linux CLI 已支持：CMake `BUILD_GUI=OFF`，JPEG 用 `stb_image`，SHA-256 用内置实现，链接 Linux K4A Wrapper `.so`。Linux 发布包通过 wrapper 设置 `LD_LIBRARY_PATH`，不构建 GUI。
 
 ---
@@ -539,6 +540,7 @@ src/
   converter.hpp/.cpp    // 共享核心：扫描、转换、验证、进度/取消/日志
   errors.hpp            // CancelledError
   gui_win32.cpp         // Windows 原生 GUI（bag2mkv-gui）
+  gui_backend.hpp/.cpp  // GUI 输入识别、批量任务、转换调度
   bag.hpp / bag.cpp     // 容器、chunk、LZ4、连接/消息解析
   bag_writer.hpp/.cpp   // 反向：LZ4 ROSBAG writer（chunk/connection/chunk-info）
   mkv2bag.hpp/.cpp      // 反向：K4A playback + manifest → bag
@@ -621,12 +623,12 @@ CMake 的 post-build 会把 `azurekinectsdk/bin/*.dll` 复制到 `build/Release/
 .\build\Release\bag2mkv.exe convert .\20251111_143747_001_cam1_CL8R35300SH_gait.bag -o .\out.mkv --force
 .\build\Release\bag2mkv.exe verify .\20251111_143747_001_cam1_CL8R35300SH_gait.bag .\out.mkv
 .\build\Release\bag2mkv.exe batch .\recordings --output-dir .\out\mkv --color mjpg --verify
-.\build\Release\bag2mkv-gui.exe    # GUI；可传 [input-dir] [output-dir] [--mjpg] [--start]
-.\build\Release\bag2mkv-gui.exe --batch <input-dir> --batch-output <output-dir> [--mjpg]
-.\build\Release\bag2mkv-gui.exe --to-bag <input.mkv> [--to-bag-output <output.bag>]
+.\build\Release\bag2mkv-gui.exe    # GUI；支持 [input] [--target ...] [--output ...] [--start]
+.\build\Release\bag2mkv-gui.exe --batch <input-dir> --output <output-dir> [--target ...]
+.\build\Release\bag2mkv-gui.exe --about
 ```
 
-GUI 的“输入目录/输出目录”默认递归扫描，点击“开始转换”后自动判断 bag→mkv 或 mkv→bag；输入目录里同时有 bag 和 mkv 会报错，输出目录不允许在输入目录内部；嵌套子目录会按相对路径镜像。CLI `batch` 仍只处理 bag；`mkv2bag` 是单文件。
+GUI 的“单文件 / 批量 / 关于”三视图共用 `bag2mkv_core`；输入自动识别 Orbbec/标准 ROS1/ROS2/K4A，输出目标按输入启用；批量递归并镜像子目录；支持拖放、标定、验证、进度/取消/日志和打开输出。
 
 GUI 是 Windows 原生 Win32（Common Controls），不依赖 Qt；`bag2mkv-gui` 是 `WIN32` 子系统，
 没有控制台窗口。GUI 的进度/取消通过 `converter` 的 `ProgressCallback` 实现，取消时
@@ -743,7 +745,7 @@ GUI 是 Windows 原生 Win32（Common Controls），不依赖 Qt；`bag2mkv-gui`
 6. `K4A_CALIBRATION_FILE` tag 目前是无 target 的全局 tag；playback 按文件名 `calibration.json` 回退成功，但严格 target UID 未设置。
 7. 写线程磁盘队列较慢时 K4A 仍会打印 “Disk write speed is too low”；`k4a_set_debug_message_handler` 过滤不到这条内部日志。BGRA 模式每帧 sleep 10 ms、MJPG 2 ms 限速；慢磁盘/大文件仍可能看到该日志。
 8. 默认输出是 raw 深度 + BGRA 彩色（~12.5 GB/45 s），没有可选的 FFV1 等无损压缩容器；BGRA 体积是旧播放器兼容的代价。
-9. GUI 当前仅 Windows Win32；主界面已简化为“输入目录 + 输出目录 + 开始转换”，自动识别方向并递归镜像子目录。没有安装包、没有多语言、没有可编辑队列；`--start`、`--mjpg`、`--batch`、`--batch-output`、`--to-bag`、`--to-bag-output` 主要用于预填和冒烟测试。
+9. GUI 当前仅 Windows Win32；已重构为“单文件 / 批量 / 关于”三视图，支持全部八条转换路径、自动输入识别、目标格式自动禁用、拖放、标定、进度/取消/日志和输出目录。没有安装包、没有多语言、没有可编辑队列；`--start`、`--target`、`--batch`、`--output`、`--about` 用于预填和冒烟测试。
 
 ---
 

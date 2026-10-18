@@ -19,7 +19,7 @@
   <img alt="ROS" src="https://img.shields.io/badge/ROS-1%20%7C%202-22314E">
 </p>
 
-> **v0.6.0** — Windows x64 提供 CLI + GUI；Linux x86_64 提供 CLI。ROS 1/2 转换在两个平台的 CLI 中可用。
+> **v0.6.0** — Windows x64 提供 CLI + GUI；Linux x86_64 提供 CLI。八条转换路径全部可在 Windows GUI 和两个平台的 CLI 中使用。
 > GUI 仅支持 Windows。
 
 `bag2mkv` 是一个专注、可验证的 RGB-D 录制转换工具。它不会重新编码彩色、不会滤波深度、不会强行对齐数据流，也不会把普通视频封装伪装成 Kinect 录制。它尽可能保留源数据，并提供一套可以独立验证结果的方法。
@@ -75,6 +75,8 @@ Azure Kinect 录制（`.mkv`）和 Orbbec ROSBAG（`.bag`）都包含同步的�
 | 8 | K4A MKV | ROS2 sqlite3 bag 目录 | `mkv2ros2` | 可用 |
 
 > `mkv2ros1` / `mkv2ros2` 目前会先经过一个临时 Orbbec bag。输出格式是正确的；多一次磁盘 I/O 只是实现细节，不是格式限制。
+
+Windows GUI 提供上述全部转换路径。不支持的输入/输出组合会自动禁用，不会等用户点击“开始”后才失败。
 
 **暂不支持：** 任意 ROS 图像分辨率、IMU 流、ROS2 MCAP 存储。详见[限制与路线图](#限制与路线图)。
 
@@ -309,27 +311,29 @@ K4A 只支持以下模式：
 
 ## GUI
 
-`bag2mkv-gui.exe` 是原生 Win32 GUI，不是网页套壳。
+`bag2mkv-gui.exe` 是原生 Win32 转换工作台，不是网页套壳。
 
-```text
-输入目录  +  输出目录  +  开始转换
-```
+界面分为 **单文件转换**、**批量工作区**、**关于** 三个视图。源卡片接受 `.bag`、`.mkv` 和 ROS 2 bag 目录；输出格式可选择 K4A MKV、ROS 1 bag、ROS 2 bag 或 Orbbec bag。当前输入无法生成的格式会自动禁用。
 
-- 递归扫描 `.bag` / `.mkv`。
-- 自动判断方向：全是 bag → MKV；全是 MKV → Orbbec bag。
-- 目录中同时有两种格式会直接报错。
-- 子目录结构会镜像到输出目录。
-- 单个文件失败不会中断其余文件；进度、取消、日志都在窗口内。
-- 支持覆盖确认、转换后自动验证、彩色模式。
-
-GUI 目前只覆盖 **Orbbec bag ↔ K4A MKV**；ROS 转换在 v0.6.0 中仅 CLI 可用。
+- 自动识别 Orbbec ROSBAG、标准 ROS 1、ROS 2 sqlite3 和 K4A MKV。
+- 单文件与递归目录批量。
+- 镜像输入子目录结构到输出目录。
+- 拖放、原生文件/目录选择器、键盘友好的控件。
+- 彩色 BGRA/MJPEG、验证、覆盖、保留原始 JPEG、标定 JSON、跳过标定等选项。
+- 实时阶段/进度、取消、带时间戳的活动日志、打开输出目录。
+- 批量中单个文件失败后继续，最后汇总成功/失败数量。
+- 支持命令行预填，便于脚本或“打开方式”。
 
 ```powershell
 .\build\Release\bag2mkv-gui.exe
-.\build\Release\bag2mkv-gui.exe <输入目录> <输出目录> --start
-.\build\Release\bag2mkv-gui.exe --batch <输入目录> --batch-output <输出目录> --mjpg
-.\build\Release\bag2mkv-gui.exe --to-bag <input.mkv> --to-bag-output <output.bag>
+.\build\Release\bag2mkv-gui.exe capture.bag
+.\build\Release\bag2mkv-gui.exe capture.bag --target ros1 --start
+.\build\Release\bag2mkv-gui.exe capture.mkv --target ros2 --start
+.\build\Release\bag2mkv-gui.exe --batch .\recordings --output .\converted --target k4a --start
+.\build\Release\bag2mkv-gui.exe --about
 ```
+
+`--target` 支持 `k4a`/`mkv`、`ros1`、`ros2`、`orbbec`/`bag`。`--start` 立即开始；`--output` 用于批量或单文件输出路径。
 
 ---
 
@@ -359,6 +363,7 @@ src/
   ros2_export.cpp              Orbbec bag → ROS2 sqlite3/CDR
   ros2_input.cpp               ROS2 sqlite3/CDR → K4A MKV
   gui_win32.cpp                原生 Windows GUI
+  gui_backend.cpp              GUI 输入识别、任务构建与转换调度
 third_party/                   LZ4、bzip2、SQLite
 ```
 
@@ -426,7 +431,6 @@ ctest --test-dir build -C Release --output-on-failure
 
 - **GUI 仅支持 Windows。** CLI（包括 ROS1/ROS2 转换）在 Windows 和 Linux 上都可用。
 - **Linux 只有 CLI。** 没有 Linux GUI；原生 Win32 GUI 不跨平台。
-- **GUI 不暴露 ROS。** v0.6.0 中 ROS 1/2 仅 CLI。
 - **没有任意分辨率模式。** K4A 固定模式是硬约束，不做隐式 resize/crop。
 - **暂不做 CameraInfo → K4A 标定合成。** ROS 来源的 MKV 可能缺少标定。
 - **暂不支持 IMU 流。**
@@ -438,7 +442,6 @@ ctest --test-dir build -C Release --output-on-failure
 
 - [ ] 原生 Linux 包（`.deb`、AppImage）与更多发行版测试。
 - [ ] K4A playback 直接导出 ROS1/ROS2，去掉临时 bag。
-- [ ] GUI 增加 ROS1/ROS2 方向。
 - [ ] 可选的显式 `--allow-resize`，用于非 K4A 分辨率的 ROS 输入，并明确标记有损。
 - [ ] CameraInfo → K4A 标定合成。
 - [ ] IMU track 支持。

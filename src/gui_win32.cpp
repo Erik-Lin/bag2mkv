@@ -1,68 +1,105 @@
+#include "gui_backend.hpp"
+
 #include "converter.hpp"
 #include "errors.hpp"
-#include "mkv2bag.hpp"
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
+#include <windowsx.h>
 #include <commctrl.h>
 #include <commdlg.h>
+#include <dwmapi.h>
 #include <shellapi.h>
 #include <shlobj.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <cmath>
 #include <cstdint>
-#include <cwctype>
+#include <cstdio>
 #include <filesystem>
 #include <memory>
-#include <set>
 #include <string>
 #include <thread>
 #include <utility>
 #include <vector>
 
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
+
 namespace {
 
 using namespace bag2mkv;
+using namespace bag2mkv::gui;
+namespace fs = std::filesystem;
 
-constexpr int ID_INPUT = 1001;
-constexpr int ID_BROWSE_INPUT = 1002;
-constexpr int ID_OUTPUT = 1003;
-constexpr int ID_BROWSE_OUTPUT = 1004;
-constexpr int ID_COLOR = 1005;
-constexpr int ID_PRESERVE = 1006;
-constexpr int ID_VERIFY = 1007;
-constexpr int ID_FORCE = 1008;
-constexpr int ID_CALIB = 1009;
-constexpr int ID_BROWSE_CALIB = 1010;
-constexpr int ID_CLEAR_CALIB = 1011;
-constexpr int ID_START = 1012;
-constexpr int ID_CANCEL = 1013;
-constexpr int ID_OPEN = 1014;
-constexpr int ID_PROGRESS = 1015;
-constexpr int ID_STATUS = 1016;
-constexpr int ID_LOG = 1017;
-constexpr int ID_NO_CALIB = 1018;
-constexpr int ID_BATCH = 1019;
-constexpr int ID_TO_BAG = 1020;
+constexpr int ID_SOURCE_EDIT = 3001;
+constexpr int ID_OUTPUT_EDIT = 3002;
+constexpr int ID_CALIB_EDIT = 3003;
+constexpr int ID_SOURCE_FILE = 3010;
+constexpr int ID_SOURCE_FOLDER = 3011;
+constexpr int ID_OUTPUT_BROWSE = 3012;
+constexpr int ID_CALIB_BROWSE = 3013;
+constexpr int ID_START = 3020;
+constexpr int ID_CANCEL = 3021;
+constexpr int ID_OPEN = 3022;
+constexpr int ID_CLEAR = 3023;
+constexpr int ID_LOG = 3030;
 
-constexpr UINT WM_APP_PROGRESS = WM_APP + 1;
-constexpr UINT WM_APP_LOG = WM_APP + 2;
-constexpr UINT WM_APP_DONE = WM_APP + 3;
-constexpr UINT WM_APP_ERROR = WM_APP + 4;
-constexpr UINT WM_APP_CANCELLED = WM_APP + 5;
-constexpr UINT WM_APP_BATCH_DONE = WM_APP + 6;
-constexpr UINT WM_APP_TO_BAG_DONE = WM_APP + 7;
+constexpr UINT WM_APP_PROGRESS = WM_APP + 20;
+constexpr UINT WM_APP_LOG = WM_APP + 21;
+constexpr UINT WM_APP_DONE = WM_APP + 22;
 
-struct BatchResult {
-    uint64_t total = 0;
-    uint64_t succeeded = 0;
-    uint64_t failed = 0;
-    std::wstring output_dir;
+constexpr COLORREF kBg = RGB(8, 12, 20);
+constexpr COLORREF kSidebar = RGB(11, 17, 28);
+constexpr COLORREF kCard = RGB(17, 24, 38);
+constexpr COLORREF kCardAlt = RGB(21, 30, 47);
+constexpr COLORREF kField = RGB(11, 17, 27);
+constexpr COLORREF kBorder = RGB(35, 48, 70);
+constexpr COLORREF kBorderSoft = RGB(27, 38, 56);
+constexpr COLORREF kText = RGB(242, 247, 255);
+constexpr COLORREF kMuted = RGB(143, 159, 183);
+constexpr COLORREF kFaint = RGB(91, 108, 132);
+constexpr COLORREF kAccent = RGB(74, 134, 255);
+constexpr COLORREF kAccentSoft = RGB(37, 67, 128);
+constexpr COLORREF kTeal = RGB(45, 212, 191);
+constexpr COLORREF kGreen = RGB(74, 222, 128);
+constexpr COLORREF kAmber = RGB(251, 191, 36);
+constexpr COLORREF kRed = RGB(248, 113, 113);
+constexpr COLORREF kWhite = RGB(255, 255, 255);
+
+constexpr UINT_PTR kDwmDark = 20;
+
+enum class View {
+    Single,
+    Batch,
+    About,
 };
 
-struct ToBagResult {
-    Mkv2BagSummary summary;
-    std::wstring output_path;
+enum class UiState {
+    Ready,
+    Running,
+    Success,
+    Error,
+    Cancelled,
+};
+
+struct ProgressPayload {
+    int percent = 0;
+    int current = 0;
+    int total = 0;
+    std::wstring stage;
+};
+
+struct DonePayload {
+    int succeeded = 0;
+    int failed = 0;
+    bool cancelled = false;
+    std::wstring message;
 };
 
 std::string narrow(const std::wstring &s) {
@@ -83,12 +120,14 @@ std::wstring widen(const std::string &s) {
 
 std::wstring get_text(HWND hwnd) {
     int len = GetWindowTextLengthW(hwnd);
-    std::wstring s(static_cast<size_t>(len) + 1, L'\0');
-    if (len > 0) {
-        GetWindowTextW(hwnd, s.data(), len + 1);
-    }
-    s.resize(static_cast<size_t>(len));
-    return s;
+    std::wstring out(static_cast<size_t>(len) + 1, L'\0');
+    if (len > 0) GetWindowTextW(hwnd, out.data(), len + 1);
+    out.resize(static_cast<size_t>(len));
+    return out;
+}
+
+void set_text(HWND hwnd, const std::wstring &text) {
+    SetWindowTextW(hwnd, text.c_str());
 }
 
 std::wstring human_size(uint64_t bytes) {
@@ -97,10 +136,50 @@ std::wstring human_size(uint64_t bytes) {
         swprintf_s(buf, L"%.2f GB", double(bytes) / (1024.0 * 1024.0 * 1024.0));
     } else if (bytes >= 1024ull * 1024ull) {
         swprintf_s(buf, L"%.1f MB", double(bytes) / (1024.0 * 1024.0));
+    } else if (bytes >= 1024ull) {
+        swprintf_s(buf, L"%.1f KB", double(bytes) / 1024.0);
     } else {
         swprintf_s(buf, L"%llu B", static_cast<unsigned long long>(bytes));
     }
     return buf;
+}
+
+std::wstring file_name(const fs::path &path) {
+    const std::wstring name = path.filename().wstring();
+    return name.empty() ? path.wstring() : name;
+}
+
+std::wstring pick_file(HWND owner, const wchar_t *title) {
+    wchar_t path[MAX_PATH] = {};
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter =
+        L"Supported recordings\0*.bag;*.mkv\0"
+        L"ROSBAG / Orbbec (*.bag)\0*.bag\0"
+        L"K4A recording (*.mkv)\0*.mkv\0"
+        L"All files\0*.*\0";
+    ofn.lpstrFile = path;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrTitle = title;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
+    if (!GetOpenFileNameW(&ofn)) return {};
+    return path;
+}
+
+std::wstring pick_save(HWND owner, const wchar_t *title, const wchar_t *filter, const wchar_t *extension) {
+    wchar_t path[MAX_PATH] = {};
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter = filter;
+    ofn.lpstrFile = path;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrTitle = title;
+    ofn.lpstrDefExt = extension;
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
+    if (!GetSaveFileNameW(&ofn)) return {};
+    return path;
 }
 
 std::wstring pick_folder(HWND owner, const wchar_t *title) {
@@ -109,1419 +188,1583 @@ std::wstring pick_folder(HWND owner, const wchar_t *title) {
     info.lpszTitle = title;
     info.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE | BIF_USENEWUI;
     PIDLIST_ABSOLUTE idlist = SHBrowseForFolderW(&info);
-    if (idlist == nullptr) return {};
+    if (!idlist) return {};
     wchar_t path[MAX_PATH] = {};
     std::wstring result;
-    if (SHGetPathFromIDListW(idlist, path)) {
-        result = path;
-    }
+    if (SHGetPathFromIDListW(idlist, path)) result = path;
     CoTaskMemFree(idlist);
     return result;
 }
 
-std::wstring pick_mkv_file(HWND owner) {
-    wchar_t path[MAX_PATH] = {};
-    OPENFILENAMEW ofn{};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = owner;
-    ofn.lpstrFilter = L"K4A MKV (*.mkv)\0*.mkv\0All files (*.*)\0*.*\0";
-    ofn.lpstrFile = path;
-    ofn.nMaxFile = MAX_PATH;
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
-    if (!GetOpenFileNameW(&ofn)) return {};
-    return path;
-}
-
-std::wstring pick_bag_save(HWND owner, const std::wstring &suggested) {
-    wchar_t path[MAX_PATH] = {};
-    if (!suggested.empty()) {
-        wcsncpy_s(path, suggested.c_str(), _TRUNCATE);
+bool is_subpath(const fs::path &child, const fs::path &parent) {
+    std::error_code ec;
+    fs::path c = fs::weakly_canonical(child, ec);
+    if (ec) c = child;
+    fs::path p = fs::weakly_canonical(parent, ec);
+    if (ec) p = parent;
+    auto ci = c.begin();
+    for (auto pi = p.begin(); pi != p.end(); ++pi, ++ci) {
+        if (ci == c.end() || *ci != *pi) return false;
     }
-    OPENFILENAMEW ofn{};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = owner;
-    ofn.lpstrFilter = L"Orbbec ROSBAG (*.bag)\0*.bag\0All files (*.*)\0*.*\0";
-    ofn.lpstrFile = path;
-    ofn.nMaxFile = MAX_PATH;
-    ofn.lpstrDefExt = L"bag";
-    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
-    if (!GetSaveFileNameW(&ofn)) return {};
-    return path;
+    return true;
 }
 
-struct App {
-    HINSTANCE instance = nullptr;
-    HWND hwnd = nullptr;
-    HFONT font = nullptr;
-    int dpi = 96;
+std::wstring now_time() {
+    SYSTEMTIME st{};
+    GetLocalTime(&st);
+    wchar_t buf[16];
+    swprintf_s(buf, L"%02d:%02d:%02d", st.wHour, st.wMinute, st.wSecond);
+    return buf;
+}
 
-    HWND hInput = nullptr;
-    HWND hBrowseInput = nullptr;
-    HWND hOutput = nullptr;
-    HWND hBrowseOutput = nullptr;
-    HWND hColor = nullptr;
-    HWND hPreserve = nullptr;
-    HWND hVerify = nullptr;
-    HWND hForce = nullptr;
-    HWND hNoCalib = nullptr;
-    HWND hCalib = nullptr;
-    HWND hBrowseCalib = nullptr;
-    HWND hClearCalib = nullptr;
-    HWND hStart = nullptr;
-    HWND hCancel = nullptr;
-    HWND hBatch = nullptr;
-    HWND hToBag = nullptr;
-    HWND hOpen = nullptr;
-    HWND hProgress = nullptr;
-    HWND hStatus = nullptr;
-    HWND hLog = nullptr;
+std::wstring ellipsize(const std::wstring &text, size_t max_chars) {
+    if (text.size() <= max_chars) return text;
+    return text.substr(0, max_chars > 3 ? max_chars - 3 : 0) + L"...";
+}
 
-    std::thread worker;
-    std::atomic<bool> cancel{false};
-    bool running = false;
-    bool close_when_done = false;
-    bool batch_mode = false;
-    std::atomic<uint64_t> batch_index{0};
-    uint64_t batch_total = 0;
-    std::wstring last_output_dir;
-    ConvertSummary last_summary;
+class StudioApp {
+public:
+    explicit StudioApp(HWND hwnd) : hwnd_(hwnd) {}
+    ~StudioApp();
 
-    int S(int value) const { return MulDiv(value, dpi, 96); }
+    bool create();
+    LRESULT handle(UINT msg, WPARAM wparam, LPARAM lparam);
+    void load_path(const std::wstring &path);
+    void load_batch(const std::wstring &input_dir, const std::wstring &output_dir);
+    void select_target(const std::wstring &target);
+    void set_output_path(const std::wstring &path);
+    void show_about();
+    void begin();
 
+private:
+    HWND hwnd_ = nullptr;
+    UINT dpi_ = 96;
+    double ui_scale_ = 1.0;
+    HFONT font_display_ = nullptr;
+    HFONT font_title_ = nullptr;
+    HFONT font_h2_ = nullptr;
+    HFONT font_body_ = nullptr;
+    HFONT font_body_bold_ = nullptr;
+    HFONT font_small_ = nullptr;
+    HFONT font_micro_ = nullptr;
+    HFONT font_mono_ = nullptr;
+
+    HBRUSH edit_brush_ = nullptr;
+    HBRUSH log_brush_ = nullptr;
+
+    HWND source_edit_ = nullptr;
+    HWND output_edit_ = nullptr;
+    HWND calib_edit_ = nullptr;
+    HWND log_edit_ = nullptr;
+    HWND source_file_ = nullptr;
+    HWND source_folder_ = nullptr;
+    HWND output_browse_ = nullptr;
+    HWND calib_browse_ = nullptr;
+    HWND start_ = nullptr;
+    HWND cancel_ = nullptr;
+    HWND open_ = nullptr;
+    HWND clear_ = nullptr;
+
+    View view_ = View::Single;
+    UiState state_ = UiState::Ready;
+    InputKind input_kind_ = InputKind::None;
+    OutputKind output_kind_ = OutputKind::K4aMkv;
+    std::wstring source_path_;
+    std::wstring output_path_;
+    std::wstring calib_path_;
+    std::wstring stage_ = L"Ready when you are";
+    std::wstring message_;
+    std::wstring batch_error_;
+    std::vector<SourceItem> batch_items_;
+    std::wstring batch_root_;
+    InputKind batch_kind_ = InputKind::None;
+    bool batch_scanned_ = false;
+
+    bool verify_ = false;
+    bool overwrite_ = false;
+    bool preserve_ = true;
+    bool no_calibration_ = false;
+    bool color_mjpg_ = false;
+
+    bool busy_ = false;
+    std::atomic<bool> cancel_requested_{false};
+    std::thread worker_;
+    int progress_ = 0;
+
+    bool tracking_mouse_ = false;
+    int hover_target_ = -1;
+    int hover_color_ = -1;
+    int hover_toggle_ = -1;
+    int hover_nav_ = -1;
+    bool hover_link_ = false;
+
+    std::array<RECT, 4> target_rects_{};
+    std::array<RECT, 2> color_rects_{};
+    std::array<RECT, 4> toggle_rects_{};
+    std::array<RECT, 3> nav_rects_{};
+    RECT link_rect_{};
+    RECT source_card_{};
+    RECT output_card_{};
+    RECT options_card_{};
+    RECT command_row_{};
+    RECT activity_card_{};
+
+    int S(int value) const { return static_cast<int>(std::lround(value * ui_scale_)); }
+    void create_fonts();
+    void destroy_fonts();
+    void apply_fonts();
     void create_controls();
     void layout();
-    void apply_font();
-    void set_running(bool value);
-    void append_log(const std::wstring &line);
-    void set_status(const std::wstring &line);
-    void reset_progress();
-    std::wstring suggested_output(const std::wstring &input) const;
-    void browse_input();
+    void paint(HDC hdc);
+    void paint_sidebar(HDC hdc, const RECT &client);
+    void paint_header(HDC hdc, const RECT &client);
+    void paint_source(HDC hdc);
+    void paint_output(HDC hdc);
+    void paint_options(HDC hdc);
+    void paint_command(HDC hdc);
+    void paint_activity(HDC hdc);
+    void paint_about(HDC hdc, const RECT &client);
+    void paint_button(const DRAWITEMSTRUCT *item);
+    void draw_card(HDC hdc, const RECT &rect);
+    void draw_field(HDC hdc, const RECT &rect, HWND edit);
+    void draw_text(HDC hdc, const std::wstring &text, RECT rect, HFONT font, COLORREF color, UINT flags);
+    void draw_round(HDC hdc, RECT rect, int radius, COLORREF fill, COLORREF border, int border_width = 1);
+    void draw_chip(HDC hdc, RECT rect, const std::wstring &label, COLORREF color);
+    void draw_toggle(HDC hdc, RECT rect, const std::wstring &label, bool checked, bool enabled);
+    void draw_segment(HDC hdc, RECT rect, const std::wstring &label, bool selected, bool enabled,
+                      bool hovered);
+    void update_controls();
+    void update_state(UiState state, const std::wstring &stage);
+    void set_view(View view);
+    void on_source_committed();
+    void set_source(const std::wstring &path);
+    void refresh_batch(const std::wstring &path);
+    void set_output_kind(OutputKind kind);
+    void browse_source_file();
+    void browse_source_folder();
     void browse_output();
     void browse_calibration();
-    void start_conversion();
-    void start_directory_batch(const std::wstring &input_dir, const std::wstring &output_dir);
-    void start_batch();
-    void start_batch_dirs(const std::wstring &input_dir, const std::wstring &output_dir);
-    void start_mkv2bag();
-    void start_mkv2bag_paths(const std::wstring &input, const std::wstring &output);
-    void request_cancel();
-    void open_output_folder();
-    void on_progress(const ProgressInfo &info);
-    void on_done(const ConvertSummary &summary);
-    void on_batch_done(const BatchResult &result);
-    void on_to_bag_done(const ToBagResult &result);
-    void on_error(const std::string &error);
-    void on_cancelled();
-    void on_command(int id, int code);
-    void on_drop(HDROP drop);
-    void on_close();
+    void start();
+    void cancel();
+    void open_output();
+    void append_log(const std::wstring &line);
+    void clear_log();
+    void run_jobs(std::vector<ConversionJob> jobs);
+    void on_done(const DonePayload &done);
+    void on_progress(const ProgressPayload &progress);
+    bool calibration_applicable() const;
+    bool color_applicable() const;
+    bool verify_applicable() const;
+    bool preserve_applicable() const;
+    bool no_calibration_applicable() const;
+    std::wstring detected_text() const;
+    std::wstring start_label() const;
+    std::wstring status_text() const;
+    COLORREF status_color() const;
+    void browse_for_output();
+    std::wstring source_for_use() const;
+    std::wstring output_for_use() const;
+    void commit_source_from_edit();
+    void refresh_hover(int x, int y);
+    void on_click(int x, int y);
+    bool point_in(const RECT &rect, int x, int y) const {
+        return x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom;
+    }
 };
 
-void App::apply_font() {
-    if (font == nullptr) return;
-    EnumChildWindows(hwnd, [](HWND child, LPARAM param) -> BOOL {
-        SendMessageW(child, WM_SETFONT, static_cast<WPARAM>(param), static_cast<LPARAM>(TRUE));
-        return TRUE;
-    }, reinterpret_cast<LPARAM>(font));
+StudioApp::~StudioApp() {
+    cancel_requested_ = true;
+    if (worker_.joinable()) worker_.join();
+    destroy_fonts();
+    if (edit_brush_) DeleteObject(edit_brush_);
+    if (log_brush_) DeleteObject(log_brush_);
 }
 
-void App::create_controls() {
-    auto make = [&](const wchar_t *cls, const wchar_t *text, DWORD style, DWORD ex_style, int id) {
-        return CreateWindowExW(ex_style, cls, text, WS_CHILD | WS_VISIBLE | style, 0, 0, 0, 0, hwnd,
-                               reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
+void StudioApp::create_fonts() {
+    destroy_fonts();
+    const int d = std::max(72, static_cast<int>(std::lround(96.0 * ui_scale_)));
+    auto make = [d](int pt, int weight, const wchar_t *face) {
+        return CreateFontW(-MulDiv(pt, d, 72), 0, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                           OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
+                           face);
     };
-
-    make(L"STATIC", L"输入目录", SS_LEFT, 0, 0);
-    hInput = make(L"EDIT", L"", ES_AUTOHSCROLL, WS_EX_CLIENTEDGE, ID_INPUT);
-    hBrowseInput = make(L"BUTTON", L"浏览...", BS_PUSHBUTTON, 0, ID_BROWSE_INPUT);
-
-    make(L"STATIC", L"输出目录", SS_LEFT, 0, 0);
-    hOutput = make(L"EDIT", L"", ES_AUTOHSCROLL, WS_EX_CLIENTEDGE, ID_OUTPUT);
-    hBrowseOutput = make(L"BUTTON", L"浏览...", BS_PUSHBUTTON, 0, ID_BROWSE_OUTPUT);
-
-    make(L"BUTTON", L"输出选项", BS_GROUPBOX, 0, 0);
-
-    hColor = make(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL, 0, ID_COLOR);
-    SendMessageW(hColor, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(
-        L"BGRA 1080p（兼容 kinect-analyzer；约 12.5 GB）"));
-    SendMessageW(hColor, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(
-        L"MJPEG 原码流（约 1.2 GB；部分播放器不支持）"));
-    SendMessageW(hColor, CB_SETCURSEL, 0, 0);
-
-    hPreserve = make(L"BUTTON", L"保留原始 MJPEG 轨道（推荐，约 +0.2 GB）", BS_AUTOCHECKBOX, 0, ID_PRESERVE);
-    hVerify = make(L"BUTTON", L"转换后自动验证（推荐）", BS_AUTOCHECKBOX, 0, ID_VERIFY);
-    hForce = make(L"BUTTON", L"覆盖已存在的输出文件", BS_AUTOCHECKBOX, 0, ID_FORCE);
-    hNoCalib = make(L"BUTTON", L"不写入 calibration.json（不推荐）", BS_AUTOCHECKBOX, 0, ID_NO_CALIB);
-
-    make(L"STATIC", L"标定 JSON（可选）", SS_LEFT, 0, 0);
-    hCalib = make(L"EDIT", L"", ES_AUTOHSCROLL | ES_READONLY, WS_EX_CLIENTEDGE, ID_CALIB);
-    hBrowseCalib = make(L"BUTTON", L"选择...", BS_PUSHBUTTON, 0, ID_BROWSE_CALIB);
-    hClearCalib = make(L"BUTTON", L"清除", BS_PUSHBUTTON, 0, ID_CLEAR_CALIB);
-
-    hStart = make(L"BUTTON", L"开始转换", BS_DEFPUSHBUTTON, 0, ID_START);
-    hCancel = make(L"BUTTON", L"取消", BS_PUSHBUTTON, 0, ID_CANCEL);
-    hOpen = make(L"BUTTON", L"打开输出目录", BS_PUSHBUTTON, 0, ID_OPEN);
-
-    hProgress = CreateWindowExW(0, PROGRESS_CLASSW, L"", WS_CHILD | WS_VISIBLE | PBS_SMOOTH, 0, 0, 0, 0, hwnd,
-                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_PROGRESS)), instance, nullptr);
-    hStatus = make(L"STATIC", L"选择包含 bag 或 mkv 的输入目录，再选择输出目录，点击“开始转换”。", SS_LEFT, 0,
-                   ID_STATUS);
-    hLog = make(L"EDIT", L"", ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL, WS_EX_CLIENTEDGE, ID_LOG);
-
-    SendMessageW(hPreserve, BM_SETCHECK, BST_CHECKED, 0);
-    SendMessageW(hVerify, BM_SETCHECK, BST_CHECKED, 0);
-    SendMessageW(hProgress, PBM_SETRANGE, 0, MAKELPARAM(0, 1000));
-    set_running(false);
-    EnableWindow(hOpen, FALSE);
-    apply_font();
+    font_display_ = make(27, FW_BOLD, L"Segoe UI");
+    font_title_ = make(20, FW_BOLD, L"Segoe UI");
+    font_h2_ = make(12, FW_SEMIBOLD, L"Segoe UI");
+    font_body_ = make(10, FW_NORMAL, L"Segoe UI");
+    font_body_bold_ = make(10, FW_SEMIBOLD, L"Segoe UI");
+    font_small_ = make(9, FW_NORMAL, L"Segoe UI");
+    font_micro_ = make(8, FW_SEMIBOLD, L"Segoe UI");
+    font_mono_ = make(9, FW_NORMAL, L"Cascadia Mono");
+    if (!font_mono_) font_mono_ = make(9, FW_NORMAL, L"Consolas");
 }
 
-void App::layout() {
-    RECT rc{};
-    GetClientRect(hwnd, &rc);
-    const int margin = S(16);
-    const int label_w = S(92);
-    const int button_w = S(76);
-    const int row_h = S(25);
-    const int gap = S(8);
-    int y = margin;
-
-    // Input row.
-    // Labels are created with id 0; enumerate the first three static labels.
-    HWND labels[4] = {};
-    int found = 0;
-    std::pair<HWND *, int *> label_ctx{labels, &found};
-    EnumChildWindows(hwnd, [](HWND child, LPARAM param) -> BOOL {
-        auto *ctx = reinterpret_cast<std::pair<HWND *, int *> *>(param);
-        wchar_t cls[16] = {};
-        GetClassNameW(child, cls, 16);
-        if (wcscmp(cls, L"Static") == 0 && GetDlgCtrlID(child) == 0) {
-            if (*ctx->second < 4) {
-                ctx->first[(*ctx->second)++] = child;
-            }
-        }
-        return TRUE;
-    }, reinterpret_cast<LPARAM>(&label_ctx));
-
-    if (found >= 1) MoveWindow(labels[0], margin, y + S(4), label_w, row_h, TRUE);
-    MoveWindow(hInput, margin + label_w, y, rc.right - 2 * margin - label_w - button_w - gap, row_h, TRUE);
-    MoveWindow(hBrowseInput, rc.right - margin - button_w, y, button_w, row_h, TRUE);
-    y += row_h + gap;
-
-    if (found >= 2) MoveWindow(labels[1], margin, y + S(4), label_w, row_h, TRUE);
-    MoveWindow(hOutput, margin + label_w, y, rc.right - 2 * margin - label_w - button_w - gap, row_h, TRUE);
-    MoveWindow(hBrowseOutput, rc.right - margin - button_w, y, button_w, row_h, TRUE);
-    y += row_h + gap + S(4);
-
-    const int group_h = S(196);
-    // Group box is the only BS_GROUPBOX; find it.
-    HWND group = nullptr;
-    EnumChildWindows(hwnd, [](HWND child, LPARAM param) -> BOOL {
-        wchar_t text[64] = {};
-        GetWindowTextW(child, text, 64);
-        if (wcscmp(text, L"输出选项") == 0) {
-            *reinterpret_cast<HWND *>(param) = child;
-            return FALSE;
-        }
-        return TRUE;
-    }, reinterpret_cast<LPARAM>(&group));
-    if (group) MoveWindow(group, margin, y, rc.right - 2 * margin, group_h, TRUE);
-
-    const int inner = y + S(28);
-    MoveWindow(GetDlgItem(hwnd, ID_COLOR), margin + S(16), inner, rc.right - 2 * margin - S(32), S(220), TRUE);
-    int cy = inner + S(32);
-    MoveWindow(hPreserve, margin + S(16), cy, rc.right - 2 * margin - S(32), row_h, TRUE);
-    cy += S(28);
-    MoveWindow(hVerify, margin + S(16), cy, S(270), row_h, TRUE);
-    MoveWindow(hForce, margin + S(300), cy, rc.right - margin - S(316), row_h, TRUE);
-    cy += S(28);
-    MoveWindow(hNoCalib, margin + S(16), cy, rc.right - 2 * margin - S(32), row_h, TRUE);
-    cy += S(30);
-    if (found >= 3) MoveWindow(labels[2], margin + S(16), cy + S(4), S(124), row_h, TRUE);
-    MoveWindow(hCalib, margin + S(144), cy, rc.right - margin - S(144) - S(160), row_h, TRUE);
-    MoveWindow(hBrowseCalib, rc.right - margin - S(156), cy, S(72), row_h, TRUE);
-    MoveWindow(hClearCalib, rc.right - margin - S(76), cy, S(60), row_h, TRUE);
-    y += group_h + gap;
-
-    MoveWindow(hStart, margin, y, S(120), S(32), TRUE);
-    MoveWindow(hCancel, margin + S(132), y, S(90), S(32), TRUE);
-    MoveWindow(hOpen, margin + S(234), y, S(120), S(32), TRUE);
-    y += S(42);
-
-    MoveWindow(hProgress, margin, y, rc.right - 2 * margin, S(18), TRUE);
-    y += S(26);
-    MoveWindow(hStatus, margin, y, rc.right - 2 * margin, S(24), TRUE);
-    y += S(30);
-
-    MoveWindow(hLog, margin, y, rc.right - 2 * margin, rc.bottom - y - margin, TRUE);
-    InvalidateRect(hwnd, nullptr, TRUE);
-}
-
-void App::set_running(bool value) {
-    running = value;
-    EnableWindow(hInput, !value);
-    EnableWindow(hBrowseInput, !value);
-    EnableWindow(hOutput, !value);
-    EnableWindow(hBrowseOutput, !value);
-    EnableWindow(hColor, !value);
-    EnableWindow(hPreserve, !value);
-    EnableWindow(hVerify, !value);
-    EnableWindow(hForce, !value);
-    EnableWindow(hNoCalib, !value);
-    EnableWindow(hCalib, !value);
-    EnableWindow(hBrowseCalib, !value);
-    EnableWindow(hClearCalib, !value);
-    EnableWindow(hStart, !value);
-    EnableWindow(hCancel, value);
-    if (value) {
-        EnableWindow(hOpen, FALSE);
+void StudioApp::apply_fonts() {
+    for (HWND h : {source_edit_, output_edit_, calib_edit_, log_edit_}) {
+        if (h) SendMessageW(h, WM_SETFONT, reinterpret_cast<WPARAM>(h == log_edit_ ? font_mono_ : font_body_), TRUE);
+    }
+    for (HWND h : {source_file_, source_folder_, output_browse_, calib_browse_, start_, cancel_, open_, clear_}) {
+        if (h) SendMessageW(h, WM_SETFONT, reinterpret_cast<WPARAM>(font_body_bold_), TRUE);
     }
 }
 
-void App::append_log(const std::wstring &line) {
-    int len = GetWindowTextLengthW(hLog);
-    SendMessageW(hLog, EM_SETSEL, static_cast<WPARAM>(len), static_cast<LPARAM>(len));
-    std::wstring text = line;
-    text += L"\r\n";
-    SendMessageW(hLog, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(text.c_str()));
-    SendMessageW(hLog, EM_SCROLLCARET, 0, 0);
+void StudioApp::destroy_fonts() {
+    for (HFONT *font : {&font_display_, &font_title_, &font_h2_, &font_body_, &font_body_bold_, &font_small_,
+                        &font_micro_, &font_mono_}) {
+        if (*font) {
+            DeleteObject(*font);
+            *font = nullptr;
+        }
+    }
 }
 
-void App::set_status(const std::wstring &line) {
-    SetWindowTextW(hStatus, line.c_str());
+bool StudioApp::create() {
+    dpi_ = GetDpiForWindow(hwnd_);
+    if (dpi_ == 0) dpi_ = 96;
+    create_fonts();
+    edit_brush_ = CreateSolidBrush(kField);
+    log_brush_ = CreateSolidBrush(kField);
+    create_controls();
+    layout();
+    DragAcceptFiles(hwnd_, TRUE);
+    return true;
 }
 
-void App::reset_progress() {
-    SendMessageW(hProgress, PBM_SETPOS, 0, 0);
+void StudioApp::create_controls() {
+    auto edit = [this](int id, DWORD style) {
+        HWND h = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | style, 0, 0, 0, 0, hwnd_,
+                                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), nullptr, nullptr);
+        SendMessageW(h, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(S(12), S(12)));
+        SendMessageW(h, EM_SETLIMITTEXT, 32767, 0);
+        SendMessageW(h, EM_SETCUEBANNER, TRUE,
+                     reinterpret_cast<LPARAM>(id == ID_SOURCE_EDIT
+                                                  ? L"Drop a .bag, .mkv, or ROS 2 bag folder here"
+                                                  : id == ID_OUTPUT_EDIT ? L"Choose a destination"
+                                                                         : L"Optional calibration.json"));
+        SendMessageW(h, WM_SETFONT, reinterpret_cast<WPARAM>(font_body_), TRUE);
+        return h;
+    };
+    source_edit_ = edit(ID_SOURCE_EDIT, ES_AUTOHSCROLL);
+    output_edit_ = edit(ID_OUTPUT_EDIT, ES_AUTOHSCROLL);
+    calib_edit_ = edit(ID_CALIB_EDIT, ES_AUTOHSCROLL);
+    log_edit_ = CreateWindowExW(0, L"EDIT", L"",
+                                WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
+                                0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_LOG)), nullptr,
+                                nullptr);
+    SendMessageW(log_edit_, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(S(12), S(10)));
+    SendMessageW(log_edit_, WM_SETFONT, reinterpret_cast<WPARAM>(font_mono_), TRUE);
+    SendMessageW(log_edit_, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L"Activity will appear here."));
+
+    auto button = [this](int id, const wchar_t *text) {
+        HWND h = CreateWindowExW(0, L"BUTTON", text, WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd_,
+                                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), nullptr, nullptr);
+        SendMessageW(h, WM_SETFONT, reinterpret_cast<WPARAM>(font_body_bold_), TRUE);
+        return h;
+    };
+    source_file_ = button(ID_SOURCE_FILE, L"File…");
+    source_folder_ = button(ID_SOURCE_FOLDER, L"Folder…");
+    output_browse_ = button(ID_OUTPUT_BROWSE, L"Browse");
+    calib_browse_ = button(ID_CALIB_BROWSE, L"…");
+    start_ = button(ID_START, L"Convert now");
+    cancel_ = button(ID_CANCEL, L"Cancel");
+    open_ = button(ID_OPEN, L"Open output");
+    clear_ = button(ID_CLEAR, L"Clear");
 }
 
-std::wstring App::suggested_output(const std::wstring &input) const {
-    if (input.empty()) return {};
-    std::filesystem::path p(input);
-    p.replace_extension(L".mkv");
-    return p.wstring();
+void StudioApp::layout() {
+    RECT client{};
+    GetClientRect(hwnd_, &client);
+    const double target_scale = std::clamp(
+        std::min({static_cast<double>(dpi_) / 96.0, static_cast<double>(client.right) / 1240.0,
+                  static_cast<double>(client.bottom) / 840.0}),
+        0.60, 1.35);
+    if (std::fabs(target_scale - ui_scale_) > 0.01) {
+        ui_scale_ = target_scale;
+        create_fonts();
+        apply_fonts();
+    }
+    const int sidebar = S(248);
+    const int left = sidebar + S(38);
+    const int right = S(32);
+    const int content_w = std::max(S(640), static_cast<int>(client.right) - left - right);
+
+    const int nav_top = S(132);
+    for (int i = 0; i < 3; ++i) {
+        nav_rects_[i] = {S(18), nav_top + i * S(48), sidebar - S(18), nav_top + (i + 1) * S(48) - S(4)};
+    }
+
+    const int card_x = left;
+    const int card_w = content_w;
+    source_card_ = {card_x, S(112), card_x + card_w, S(268)};
+    output_card_ = {card_x, S(280), card_x + card_w, S(448)};
+    options_card_ = {card_x, S(460), card_x + card_w, S(600)};
+    command_row_ = {card_x, S(612), card_x + card_w, S(650)};
+    activity_card_ = {card_x, S(662), card_x + card_w,
+                      std::max(S(720), static_cast<int>(client.bottom) - S(16))};
+
+    // Source row.
+    const int source_field_y = source_card_.top + S(64);
+    const int source_field_h = S(38);
+    int source_x = source_card_.left + S(24);
+    const int source_right = source_card_.right - S(24);
+    const int folder_w = S(92);
+    const int file_w = S(84);
+    const int gap = S(8);
+    int edit_right = source_right;
+    if (view_ == View::Single) edit_right -= file_w + gap;
+    edit_right -= folder_w + gap;
+    SetWindowPos(source_edit_, nullptr, source_x, source_field_y, std::max(S(100), edit_right - source_x),
+                 source_field_h, SWP_NOZORDER);
+    if (view_ == View::Single) {
+        SetWindowPos(source_file_, nullptr, source_right - file_w - folder_w - gap * 2, source_field_y, file_w,
+                     source_field_h, SWP_NOZORDER);
+    }
+    SetWindowPos(source_folder_, nullptr, source_right - folder_w, source_field_y, folder_w, source_field_h,
+                 SWP_NOZORDER);
+
+    // Output format segments.
+    const int seg_y = output_card_.top + S(48);
+    const int seg_h = S(40);
+    const int seg_gap = S(8);
+    const int seg_w = (card_w - S(48) - seg_gap * 3) / 4;
+    for (int i = 0; i < 4; ++i) {
+        target_rects_[i] = {output_card_.left + S(24) + i * (seg_w + seg_gap), seg_y,
+                            output_card_.left + S(24) + i * (seg_w + seg_gap) + seg_w, seg_y + seg_h};
+    }
+    const int output_y = output_card_.top + S(112);
+    const int output_browse_w = S(92);
+    SetWindowPos(output_edit_, nullptr, output_card_.left + S(24), output_y,
+                 card_w - S(48) - output_browse_w - S(8), S(38), SWP_NOZORDER);
+    SetWindowPos(output_browse_, nullptr, output_card_.right - S(24) - output_browse_w, output_y, output_browse_w,
+                 S(38), SWP_NOZORDER);
+
+    // Options.
+    const int color_y = options_card_.top + S(48);
+    color_rects_[0] = {options_card_.left + S(24), color_y, options_card_.left + S(100), color_y + S(32)};
+    color_rects_[1] = {options_card_.left + S(100), color_y, options_card_.left + S(176), color_y + S(32)};
+    const int toggle_y = color_y;
+    toggle_rects_[0] = {options_card_.left + S(210), toggle_y, options_card_.left + S(310), toggle_y + S(32)};
+    toggle_rects_[1] = {options_card_.left + S(326), toggle_y, options_card_.left + S(448), toggle_y + S(32)};
+    toggle_rects_[2] = {options_card_.left + S(464), toggle_y, options_card_.left + S(612), toggle_y + S(32)};
+    toggle_rects_[3] = {options_card_.left + S(628), toggle_y, options_card_.left + S(780), toggle_y + S(32)};
+
+    const int calib_y = options_card_.top + S(102);
+    const int calib_browse_w = S(40);
+    SetWindowPos(calib_edit_, nullptr, options_card_.left + S(142), calib_y,
+                 std::min(S(420), card_w - S(190) - calib_browse_w), S(34), SWP_NOZORDER);
+    SetWindowPos(calib_browse_, nullptr,
+                 options_card_.left + S(142) + std::min(S(420), card_w - S(190) - calib_browse_w) + S(8), calib_y,
+                 calib_browse_w, S(34), SWP_NOZORDER);
+
+    // Command row.
+    const int button_h = S(38);
+    const int start_w = S(156);
+    const int cancel_w = S(96);
+    const int open_w = S(118);
+    const int bx = command_row_.right;
+    SetWindowPos(start_, nullptr, bx - start_w, command_row_.top, start_w, button_h, SWP_NOZORDER);
+    SetWindowPos(cancel_, nullptr, bx - start_w - S(8) - cancel_w, command_row_.top, cancel_w, button_h,
+                 SWP_NOZORDER);
+    SetWindowPos(open_, nullptr, bx - start_w - S(8) - cancel_w - S(8) - open_w, command_row_.top, open_w, button_h,
+                 SWP_NOZORDER);
+
+    // Activity.
+    SetWindowPos(clear_, nullptr, activity_card_.right - S(24) - S(68), activity_card_.top + S(12), S(68), S(28),
+                 SWP_NOZORDER);
+    SetWindowPos(log_edit_, nullptr, activity_card_.left + S(24), activity_card_.top + S(48),
+                 activity_card_.right - activity_card_.left - S(48),
+                 std::max(S(80), static_cast<int>(activity_card_.bottom) - static_cast<int>(activity_card_.top) - S(64)),
+                 SWP_NOZORDER);
+    update_controls();
 }
 
-void App::browse_input() {
-    std::wstring dir = pick_folder(hwnd, L"选择输入目录（只含 bag 或只含 mkv）");
-    if (dir.empty()) return;
-    SetWindowTextW(hInput, dir.c_str());
+void StudioApp::draw_text(HDC hdc, const std::wstring &text, RECT rect, HFONT font, COLORREF color, UINT flags) {
+    if (!font) return;
+    HGDIOBJ old = SelectObject(hdc, font);
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, color);
+    DrawTextW(hdc, text.c_str(), static_cast<int>(text.size()), &rect, flags | DT_NOPREFIX);
+    SelectObject(hdc, old);
 }
 
-void App::browse_output() {
-    std::wstring dir = pick_folder(hwnd, L"选择输出目录");
-    if (dir.empty()) return;
-    SetWindowTextW(hOutput, dir.c_str());
+void StudioApp::draw_round(HDC hdc, RECT rect, int radius, COLORREF fill, COLORREF border, int border_width) {
+    HBRUSH brush = CreateSolidBrush(fill);
+    HPEN pen = CreatePen(PS_SOLID, border_width, border);
+    HGDIOBJ old_brush = SelectObject(hdc, brush);
+    HGDIOBJ old_pen = SelectObject(hdc, pen);
+    RoundRect(hdc, rect.left, rect.top, rect.right, rect.bottom, radius, radius);
+    SelectObject(hdc, old_brush);
+    SelectObject(hdc, old_pen);
+    DeleteObject(brush);
+    DeleteObject(pen);
 }
 
-void App::browse_calibration() {
-    wchar_t file[MAX_PATH] = {};
+void StudioApp::draw_card(HDC hdc, const RECT &rect) {
+    draw_round(hdc, rect, S(14), kCard, kBorderSoft);
+}
+
+void StudioApp::draw_field(HDC hdc, const RECT &rect, HWND edit) {
+    RECT field = rect;
+    InflateRect(&field, S(1), S(1));
+    const bool focus = GetFocus() == edit;
+    draw_round(hdc, field, S(8), kField, focus ? kAccent : kBorder, focus ? 2 : 1);
+}
+
+void StudioApp::draw_chip(HDC hdc, RECT rect, const std::wstring &label, COLORREF color) {
+    draw_round(hdc, rect, rect.bottom - rect.top, kCardAlt, kBorderSoft);
+    HBRUSH dot = CreateSolidBrush(color);
+    HGDIOBJ old = SelectObject(hdc, dot);
+    Ellipse(hdc, rect.left + S(11), rect.top + (rect.bottom - rect.top) / 2 - S(3),
+            rect.left + S(17), rect.top + (rect.bottom - rect.top) / 2 + S(3));
+    SelectObject(hdc, old);
+    DeleteObject(dot);
+    RECT text = rect;
+    text.left += S(24);
+    draw_text(hdc, label, text, font_small_, color, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+}
+
+void StudioApp::draw_segment(HDC hdc, RECT rect, const std::wstring &label, bool selected, bool enabled,
+                             bool hovered) {
+    COLORREF fill = selected ? kAccent : (hovered && enabled ? kCardAlt : kField);
+    COLORREF border = selected ? kAccent : (hovered && enabled ? kAccentSoft : kBorderSoft);
+    COLORREF color = selected ? kWhite : (enabled ? kMuted : kFaint);
+    draw_round(hdc, rect, S(8), fill, border);
+    draw_text(hdc, label, rect, selected ? font_body_bold_ : font_body_, color,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+}
+
+void StudioApp::draw_toggle(HDC hdc, RECT rect, const std::wstring &label, bool checked, bool enabled) {
+    const int pill_w = S(34);
+    const int pill_h = S(20);
+    RECT pill{rect.left, rect.top + (rect.bottom - rect.top - pill_h) / 2,
+              rect.left + pill_w, rect.top + (rect.bottom - rect.top + pill_h) / 2};
+    COLORREF fill = checked ? (enabled ? kAccent : kAccentSoft) : kField;
+    COLORREF border = checked ? fill : kBorder;
+    draw_round(hdc, pill, pill_h, fill, border);
+    const int knob = pill_h - S(4);
+    RECT dot{checked ? pill.right - knob - S(2) : pill.left + S(2), pill.top + S(2),
+             checked ? pill.right - S(2) : pill.left + knob + S(2), pill.top + S(2) + knob};
+    HBRUSH brush = CreateSolidBrush(enabled ? kWhite : kMuted);
+    HGDIOBJ old = SelectObject(hdc, brush);
+    HGDIOBJ pen = SelectObject(hdc, GetStockObject(NULL_PEN));
+    Ellipse(hdc, dot.left, dot.top, dot.right, dot.bottom);
+    SelectObject(hdc, old);
+    SelectObject(hdc, pen);
+    DeleteObject(brush);
+    RECT text = rect;
+    text.left += pill_w + S(9);
+    draw_text(hdc, label, text, font_small_, enabled ? (checked ? kText : kMuted) : kFaint,
+              DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+}
+
+void StudioApp::paint(HDC target) {
+    RECT client{};
+    GetClientRect(hwnd_, &client);
+    HDC mem = CreateCompatibleDC(target);
+    HBITMAP bitmap = CreateCompatibleBitmap(target, client.right, client.bottom);
+    HGDIOBJ old = SelectObject(mem, bitmap);
+    HBRUSH bg = CreateSolidBrush(kBg);
+    FillRect(mem, &client, bg);
+    DeleteObject(bg);
+
+    paint_sidebar(mem, client);
+    if (view_ == View::About) {
+        paint_about(mem, client);
+    } else {
+        paint_header(mem, client);
+        paint_source(mem);
+        paint_output(mem);
+        paint_options(mem);
+        paint_command(mem);
+        paint_activity(mem);
+    }
+
+    BitBlt(target, 0, 0, client.right, client.bottom, mem, 0, 0, SRCCOPY);
+    SelectObject(mem, old);
+    DeleteObject(bitmap);
+    DeleteDC(mem);
+}
+
+void StudioApp::paint_sidebar(HDC hdc, const RECT &client) {
+    RECT side{0, 0, S(248), client.bottom};
+    HBRUSH b = CreateSolidBrush(kSidebar);
+    FillRect(hdc, &side, b);
+    DeleteObject(b);
+    HBRUSH line = CreateSolidBrush(kBorderSoft);
+    RECT edge{S(247), 0, S(248), client.bottom};
+    FillRect(hdc, &edge, line);
+    DeleteObject(line);
+
+    draw_round(hdc, {S(22), S(24), S(62), S(64)}, S(11), kAccent, kAccent);
+    draw_text(hdc, L"b2", {S(22), S(24), S(62), S(64)}, font_h2_, kWhite, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    draw_text(hdc, L"bag2mkv", {S(76), S(24), S(220), S(46)}, font_title_, kText,
+              DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+    draw_text(hdc, L"RGB-D  STUDIO", {S(77), S(45), S(220), S(62)}, font_micro_, kMuted,
+              DT_SINGLELINE | DT_VCENTER);
+
+    const wchar_t *labels[3] = {L"Single conversion", L"Batch workspace", L"About"};
+    for (int i = 0; i < 3; ++i) {
+        const bool selected = static_cast<int>(view_) == i;
+        if (selected) {
+            draw_round(hdc, nav_rects_[i], S(8), kCardAlt, kBorderSoft);
+            HBRUSH accent = CreateSolidBrush(kAccent);
+            RECT bar{nav_rects_[i].left, nav_rects_[i].top + S(10), nav_rects_[i].left + S(3),
+                     nav_rects_[i].bottom - S(10)};
+            FillRect(hdc, &bar, accent);
+            DeleteObject(accent);
+        } else if (hover_nav_ == i) {
+            draw_round(hdc, nav_rects_[i], S(8), kCard, kBorderSoft);
+        }
+        RECT nr = nav_rects_[i];
+        nr.left += S(18);
+        draw_text(hdc, labels[i], nr, selected ? font_body_bold_ : font_body_, selected ? kText : kMuted,
+                  DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+    }
+
+    const int bottom = client.bottom - S(76);
+    draw_text(hdc, L"v0.6.0", {S(24), bottom, S(120), bottom + S(20)}, font_small_, kMuted,
+              DT_SINGLELINE | DT_VCENTER);
+    draw_text(hdc, L"MIT License · Windows x64", {S(24), bottom + S(18), S(220), bottom + S(38)}, font_micro_,
+              kFaint, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+    RECT status_dot{S(24), bottom + S(48), S(30), bottom + S(54)};
+    HBRUSH dot = CreateSolidBrush(kTeal);
+    HGDIOBJ old = SelectObject(hdc, dot);
+    Ellipse(hdc, status_dot.left, status_dot.top, status_dot.right, status_dot.bottom);
+    SelectObject(hdc, old);
+    DeleteObject(dot);
+    draw_text(hdc, L"Local · private · lossless", {S(38), bottom + S(42), S(230), bottom + S(62)}, font_micro_,
+              kFaint, DT_SINGLELINE | DT_VCENTER);
+}
+
+void StudioApp::paint_header(HDC hdc, const RECT &) {
+    const int x = S(286);
+    const wchar_t *crumbs = view_ == View::Single ? L"WORKSPACE  /  SINGLE" : L"WORKSPACE  /  BATCH";
+    draw_text(hdc, crumbs, {x, S(30), S(700), S(48)}, font_micro_, kFaint, DT_SINGLELINE | DT_VCENTER);
+    draw_text(hdc, view_ == View::Single ? L"Conversion Studio" : L"Batch Workspace",
+              {x, S(52), S(1000), S(88)}, font_display_, kText, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+    draw_text(hdc,
+              view_ == View::Single
+                  ? L"Move RGB-D data between Orbbec, K4A and ROS — without losing a bit."
+                  : L"Convert a whole recording session with one consistent target format.",
+              {x, S(90), S(1000), S(112)}, font_small_, kMuted, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+
+    RECT chip{S(1160), S(36), S(1230), S(66)};
+    RECT client{};
+    GetClientRect(hwnd_, &client);
+    chip.right = client.right - S(32);
+    chip.left = chip.right - S(164);
+    draw_chip(hdc, chip, status_text(), status_color());
+}
+
+void StudioApp::paint_source(HDC hdc) {
+    draw_card(hdc, source_card_);
+    const int x = source_card_.left + S(24);
+    const int y = source_card_.top;
+    draw_text(hdc, view_ == View::Single ? L"SOURCE" : L"SOURCE FOLDER", {x, y + S(18), x + S(300), y + S(34)},
+              font_micro_, kAccent, DT_SINGLELINE | DT_VCENTER);
+    draw_text(hdc,
+              view_ == View::Single ? L"One recording or a ROS 2 bag folder"
+                                    : L"Every .bag, .mkv and ROS 2 bag below this folder",
+              {x, y + S(36), source_card_.right - S(24), y + S(54)}, font_small_, kMuted,
+              DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+
+    RECT edit_rect{source_card_.left + S(24), source_card_.top + S(64),
+                   source_card_.right - S(24) - (view_ == View::Single ? S(84 + 92 + 16) : S(92 + 8)),
+                   source_card_.top + S(102)};
+    draw_field(hdc, edit_rect, source_edit_);
+
+    const int detected_y = source_card_.top + S(114);
+    const std::wstring detected = detected_text();
+    COLORREF color = input_kind_ == InputKind::None ? (batch_error_.empty() ? kMuted : kRed) : kTeal;
+    RECT chip{x, detected_y, x + S(296), detected_y + S(26)};
+    draw_chip(hdc, chip, detected, color);
+    draw_text(hdc, view_ == View::Single ? L"Drag & drop supported" : L"Recursive scan · mirrored output",
+              {x + S(308), detected_y, source_card_.right - S(24), detected_y + S(26)}, font_micro_, kFaint,
+              DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+}
+
+void StudioApp::paint_output(HDC hdc) {
+    draw_card(hdc, output_card_);
+    const int x = output_card_.left + S(24);
+    draw_text(hdc, L"OUTPUT FORMAT", {x, output_card_.top + S(18), x + S(300), output_card_.top + S(34)},
+              font_micro_, kAccent, DT_SINGLELINE | DT_VCENTER);
+    draw_text(hdc, L"Unsupported combinations are disabled automatically.",
+              {x, output_card_.top + S(36), output_card_.right - S(24), output_card_.top + S(52)}, font_small_,
+              kMuted, DT_SINGLELINE | DT_VCENTER);
+
+    const std::array<OutputKind, 4> kinds{OutputKind::K4aMkv, OutputKind::Ros1Bag, OutputKind::Ros2Bag,
+                                         OutputKind::OrbbecBag};
+    for (int i = 0; i < 4; ++i) {
+        const bool enabled = output_supported(input_kind_, kinds[i]);
+        draw_segment(hdc, target_rects_[i], output_kind_label(kinds[i]), output_kind_ == kinds[i] && enabled,
+                     enabled, hover_target_ == i);
+    }
+
+    RECT output_field{output_card_.left + S(24), output_card_.top + S(112),
+                      output_card_.right - S(24) - S(92) - S(8), output_card_.top + S(150)};
+    draw_field(hdc, output_field, output_edit_);
+    draw_text(hdc, output_kind_hint(output_kind_), {x, output_card_.top + S(156),
+                                                    output_card_.right - S(24), output_card_.top + S(174)},
+              font_micro_, kFaint, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+}
+
+void StudioApp::paint_options(HDC hdc) {
+    draw_card(hdc, options_card_);
+    const int x = options_card_.left + S(24);
+    draw_text(hdc, L"OPTIONS", {x, options_card_.top + S(18), x + S(300), options_card_.top + S(34)}, font_micro_,
+              kAccent, DT_SINGLELINE | DT_VCENTER);
+
+    const bool color_ok = color_applicable();
+    draw_segment(hdc, color_rects_[0], L"BGRA", !color_mjpg_ && color_ok, color_ok, hover_color_ == 0);
+    draw_segment(hdc, color_rects_[1], L"MJPEG", color_mjpg_ && color_ok, color_ok, hover_color_ == 1);
+
+    draw_toggle(hdc, toggle_rects_[0], L"Verify", verify_, verify_applicable());
+    draw_toggle(hdc, toggle_rects_[1], L"Overwrite", overwrite_, true);
+    draw_toggle(hdc, toggle_rects_[2], L"Preserve JPEG", preserve_, preserve_applicable());
+    draw_toggle(hdc, toggle_rects_[3], L"No calibration", no_calibration_, no_calibration_applicable());
+    draw_text(hdc, L"Calibration JSON", {x, options_card_.top + S(108), x + S(110), options_card_.top + S(130)},
+              font_small_, calibration_applicable() ? kMuted : kFaint, DT_SINGLELINE | DT_VCENTER);
+    if (calibration_applicable()) {
+        RECT calib_field{options_card_.left + S(142), options_card_.top + S(102),
+                         options_card_.left + S(142) +
+                             std::min(S(420), static_cast<int>(output_card_.right - output_card_.left) - S(190)),
+                         options_card_.top + S(136)};
+        draw_field(hdc, calib_field, calib_edit_);
+    } else {
+        draw_text(hdc, L"Not used for this conversion path.", {options_card_.left + S(142), options_card_.top + S(108),
+                                                               options_card_.right - S(24), options_card_.top + S(130)},
+                  font_micro_, kFaint, DT_SINGLELINE | DT_VCENTER);
+    }
+}
+
+void StudioApp::paint_command(HDC hdc) {
+    const int x = command_row_.left;
+    draw_text(hdc, stage_, {x, command_row_.top, command_row_.right - S(500), command_row_.top + S(20)},
+              font_small_, state_ == UiState::Error ? kRed : kMuted, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+    RECT bar{x, command_row_.top + S(24), command_row_.right - S(500), command_row_.top + S(30)};
+    draw_round(hdc, bar, S(3), kField, kBorderSoft);
+    if (progress_ > 0) {
+        RECT fill = bar;
+        fill.right = bar.left + (bar.right - bar.left) * progress_ / 100;
+        draw_round(hdc, fill, S(3), state_ == UiState::Error ? kRed : kAccent, state_ == UiState::Error ? kRed : kAccent);
+    }
+    if (busy_) {
+        wchar_t pct[16];
+        swprintf_s(pct, L"%d%%", progress_);
+        draw_text(hdc, pct, {bar.right + S(10), command_row_.top + S(18), bar.right + S(56), command_row_.top + S(36)},
+                  font_micro_, kMuted, DT_SINGLELINE | DT_VCENTER);
+    }
+}
+
+void StudioApp::paint_activity(HDC hdc) {
+    draw_card(hdc, activity_card_);
+    const int x = activity_card_.left + S(24);
+    draw_text(hdc, L"ACTIVITY", {x, activity_card_.top + S(16), x + S(300), activity_card_.top + S(34)}, font_micro_,
+              kAccent, DT_SINGLELINE | DT_VCENTER);
+    RECT log_field{activity_card_.left + S(24), activity_card_.top + S(48), activity_card_.right - S(24),
+                   activity_card_.bottom - S(16)};
+    draw_round(hdc, log_field, S(8), kField, kBorderSoft);
+}
+
+void StudioApp::paint_about(HDC hdc, const RECT &client) {
+    const int x = S(286);
+    const int width = client.right - x - S(32);
+    draw_text(hdc, L"ABOUT", {x, S(30), x + S(500), S(48)}, font_micro_, kAccent, DT_SINGLELINE | DT_VCENTER);
+    draw_text(hdc, L"bag2mkv", {x, S(52), x + S(700), S(104)}, font_display_, kText,
+              DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+    draw_text(hdc, L"v0.6.0  ·  MIT License  ·  Windows x64 / Linux x86_64 CLI",
+              {x, S(108), x + S(850), S(130)}, font_small_, kMuted, DT_SINGLELINE | DT_VCENTER);
+    draw_text(hdc,
+              L"A deliberate, verifiable bridge between Orbbec ROSBAG, Azure Kinect MKV and ROS 1/2. "
+              L"Color is never re-encoded. Depth is bit-exact. Every output can be verified.",
+              {x, S(146), x + width, S(194)}, font_body_, kMuted, DT_WORDBREAK);
+
+    const int card_w = (width - S(16) * 2) / 3;
+    const int card_y = S(224);
+    const int card_h = S(174);
+    for (int i = 0; i < 3; ++i) {
+        RECT card{x + i * (card_w + S(16)), card_y, x + i * (card_w + S(16)) + card_w, card_y + card_h};
+        draw_card(hdc, card);
+        const wchar_t *titles[3] = {L"LOSSLESS BY CONTRACT", L"EIGHT CONVERSION PATHS", L"VERIFY, DON'T TRUST"};
+        const wchar_t *bodies[3] = {
+            L"Original JPEG color, raw depth, timestamps and metadata are preserved. No hidden transcode.",
+            L"Orbbec bag ↔ K4A MKV, plus ROS 1 and ROS 2 import/export. One consistent CLI and GUI.",
+            L"Frame counts, timestamps and payload hashes can be checked independently after every conversion.",
+        };
+        draw_text(hdc, titles[i], {card.left + S(20), card.top + S(20), card.right - S(20), card.top + S(38)},
+                  font_micro_, kAccent, DT_SINGLELINE | DT_VCENTER);
+        draw_text(hdc, bodies[i], {card.left + S(20), card.top + S(52), card.right - S(20), card.bottom - S(20)},
+                  font_small_, kMuted, DT_WORDBREAK);
+    }
+
+    RECT link_box{x, S(438), x + width, S(466)};
+    draw_round(hdc, link_box, S(8), kCard, kBorderSoft);
+    draw_text(hdc, L"github.com/Erik-Lin/bag2mkv", {x + S(16), S(438), x + width - S(16), S(466)}, font_body_bold_,
+              kAccent, DT_SINGLELINE | DT_VCENTER);
+    link_rect_ = {x, S(438), x + S(300), S(466)};
+    draw_text(hdc, L"Built for RGB-D researchers, robotics engineers and anyone who refuses to guess.",
+              {x, S(488), x + width, S(516)}, font_micro_, kFaint, DT_SINGLELINE | DT_VCENTER);
+}
+
+void StudioApp::paint_button(const DRAWITEMSTRUCT *item) {
+    const bool primary = item->CtlID == ID_START;
+    const bool danger = item->CtlID == ID_CANCEL;
+    const bool ghost = item->CtlID == ID_OPEN || item->CtlID == ID_CLEAR;
+    const bool disabled = (item->itemState & ODS_DISABLED) != 0;
+    const bool pressed = (item->itemState & ODS_SELECTED) != 0;
+    RECT r = item->rcItem;
+    COLORREF fill = primary ? kAccent : (ghost ? kCard : kCardAlt);
+    COLORREF border = primary ? kAccent : (danger ? RGB(91, 45, 53) : kBorder);
+    COLORREF text = primary ? kWhite : (disabled ? kFaint : (danger ? kRed : kText));
+    if (pressed && !disabled) fill = primary ? RGB(52, 108, 225) : kField;
+    if (disabled) fill = kCard;
+    HDC hdc = GetDC(item->hwndItem);
+    draw_round(hdc, r, S(8), fill, border);
+    draw_text(hdc, get_text(item->hwndItem), r, primary || danger ? font_body_bold_ : font_body_, text,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    if ((item->itemState & ODS_FOCUS) && !disabled) {
+        RECT focus = r;
+        InflateRect(&focus, -S(4), -S(4));
+        DrawFocusRect(hdc, &focus);
+    }
+    ReleaseDC(item->hwndItem, hdc);
+}
+
+void StudioApp::update_controls() {
+    const bool show_content = view_ != View::About;
+    for (HWND h : {source_edit_, output_edit_, calib_edit_, log_edit_, source_file_, source_folder_, output_browse_,
+                   calib_browse_, start_, cancel_, open_, clear_}) {
+        if (h) ShowWindow(h, show_content ? SW_SHOW : SW_HIDE);
+    }
+    if (view_ == View::Batch) ShowWindow(source_file_, SW_HIDE);
+    if (!calibration_applicable()) {
+        ShowWindow(calib_edit_, SW_HIDE);
+        ShowWindow(calib_browse_, SW_HIDE);
+    }
+    if (view_ == View::About) return;
+    SetWindowTextW(start_, start_label().c_str());
+    EnableWindow(start_, !busy_ && input_kind_ != InputKind::None);
+    EnableWindow(cancel_, busy_);
+    EnableWindow(open_, !busy_ && !output_path_.empty());
+    EnableWindow(source_edit_, !busy_);
+    EnableWindow(output_edit_, !busy_);
+    EnableWindow(calib_edit_, !busy_ && calibration_applicable());
+    EnableWindow(source_file_, !busy_);
+    EnableWindow(source_folder_, !busy_);
+    EnableWindow(output_browse_, !busy_);
+    EnableWindow(calib_browse_, !busy_ && calibration_applicable());
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void StudioApp::update_state(UiState state, const std::wstring &stage) {
+    state_ = state;
+    stage_ = stage;
+    update_controls();
+}
+
+std::wstring StudioApp::detected_text() const {
+    if (!batch_error_.empty() && view_ == View::Batch) return batch_error_;
+    if (view_ == View::Batch) {
+        if (input_kind_ == InputKind::None) return L"Choose a source folder";
+        return std::to_wstring(batch_items_.size()) + L" recordings · " + input_kind_label(input_kind_);
+    }
+    if (input_kind_ == InputKind::None) return L"Choose a source to begin";
+    return input_kind_label(input_kind_) + L" detected";
+}
+
+std::wstring StudioApp::start_label() const {
+    if (view_ == View::Batch && input_kind_ != InputKind::None) {
+        return L"Convert " + std::to_wstring(batch_items_.size()) + L" files";
+    }
+    return L"Convert now";
+}
+
+std::wstring StudioApp::status_text() const {
+    switch (state_) {
+    case UiState::Running: return L"RUNNING";
+    case UiState::Success: return L"COMPLETE";
+    case UiState::Error: return L"ATTENTION";
+    case UiState::Cancelled: return L"CANCELLED";
+    default: return L"READY";
+    }
+}
+
+COLORREF StudioApp::status_color() const {
+    switch (state_) {
+    case UiState::Running: return kAccent;
+    case UiState::Success: return kGreen;
+    case UiState::Error: return kRed;
+    case UiState::Cancelled: return kAmber;
+    default: return kTeal;
+    }
+}
+
+bool StudioApp::calibration_applicable() const {
+    return (view_ == View::Batch ? batch_kind_ : input_kind_) == InputKind::OrbbecBag &&
+           output_kind_ == OutputKind::K4aMkv;
+}
+bool StudioApp::color_applicable() const {
+    return output_kind_ == OutputKind::K4aMkv &&
+           (view_ == View::Batch ? batch_kind_ : input_kind_) != InputKind::None;
+}
+bool StudioApp::verify_applicable() const {
+    return output_kind_ == OutputKind::K4aMkv &&
+           (view_ == View::Batch ? batch_kind_ : input_kind_) == InputKind::OrbbecBag;
+}
+bool StudioApp::preserve_applicable() const {
+    return output_kind_ == OutputKind::K4aMkv && !color_mjpg_ &&
+           (view_ == View::Batch ? batch_kind_ : input_kind_) == InputKind::OrbbecBag;
+}
+bool StudioApp::no_calibration_applicable() const { return calibration_applicable(); }
+
+std::wstring StudioApp::source_for_use() const {
+    if (view_ == View::Batch) return batch_root_;
+    return source_path_;
+}
+std::wstring StudioApp::output_for_use() const { return output_path_; }
+
+void StudioApp::set_view(View view) {
+    if (busy_) return;
+    view_ = view;
+    if (view == View::Single) {
+        batch_items_.clear();
+        batch_error_.clear();
+        batch_scanned_ = false;
+        batch_root_.clear();
+        batch_kind_ = InputKind::None;
+        if (!source_path_.empty()) set_source(source_path_);
+    } else if (view == View::Batch) {
+        if (!batch_root_.empty()) {
+            set_text(source_edit_, batch_root_);
+            refresh_batch(batch_root_);
+        } else if (!source_path_.empty()) {
+            set_text(source_edit_, source_path_);
+            batch_root_ = source_path_;
+            refresh_batch(source_path_);
+        }
+    }
+    layout();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void StudioApp::load_path(const std::wstring &path) {
+    if (path.empty()) return;
+    set_text(source_edit_, path);
+    set_source(path);
+}
+
+void StudioApp::load_batch(const std::wstring &input_dir, const std::wstring &output_dir) {
+    if (input_dir.empty()) return;
+    set_view(View::Batch);
+    set_text(source_edit_, input_dir);
+    batch_root_ = input_dir;
+    refresh_batch(input_dir);
+    if (!output_dir.empty()) {
+        output_path_ = output_dir;
+        set_text(output_edit_, output_dir);
+        update_controls();
+    }
+}
+
+void StudioApp::select_target(const std::wstring &target) {
+    if (target == L"mkv" || target == L"k4a") set_output_kind(OutputKind::K4aMkv);
+    else if (target == L"ros1") set_output_kind(OutputKind::Ros1Bag);
+    else if (target == L"ros2") set_output_kind(OutputKind::Ros2Bag);
+    else if (target == L"orbbec" || target == L"bag") set_output_kind(OutputKind::OrbbecBag);
+}
+
+void StudioApp::set_output_path(const std::wstring &path) {
+    if (path.empty()) return;
+    output_path_ = path;
+    set_text(output_edit_, path);
+    update_controls();
+}
+
+void StudioApp::show_about() { set_view(View::About); }
+
+void StudioApp::begin() { start(); }
+
+void StudioApp::set_source(const std::wstring &path) {
+    if (path.empty()) {
+        source_path_.clear();
+        input_kind_ = InputKind::None;
+        batch_kind_ = InputKind::None;
+        batch_items_.clear();
+        batch_error_.clear();
+        batch_scanned_ = false;
+        batch_root_.clear();
+        output_path_.clear();
+        set_text(output_edit_, L"");
+        message_ = L"Choose a source to begin.";
+        update_state(UiState::Ready, L"Ready when you are");
+        update_controls();
+        return;
+    }
+    if (view_ == View::Batch) {
+        batch_root_ = path;
+        refresh_batch(path);
+        return;
+    }
+    source_path_ = path;
+    std::wstring error;
+    input_kind_ = detect_input(fs::path(path), error);
+    if (input_kind_ == InputKind::None) {
+        message_ = error;
+        output_path_.clear();
+        set_text(output_edit_, L"");
+        update_state(UiState::Error, error);
+        update_controls();
+        return;
+    }
+    if (!output_supported(input_kind_, output_kind_)) output_kind_ = default_output(input_kind_);
+    output_path_ = suggested_output(fs::path(path), input_kind_, output_kind_).wstring();
+    set_text(output_edit_, output_path_);
+    message_ = L"Ready to convert.";
+    update_state(UiState::Ready, L"Review the target, then convert");
+}
+
+void StudioApp::refresh_batch(const std::wstring &path) {
+    batch_root_ = path;
+    batch_items_.clear();
+    batch_kind_ = InputKind::None;
+    batch_error_.clear();
+    batch_scanned_ = false;
+    std::wstring error;
+    batch_items_ = scan_batch(fs::path(path), error);
+    if (!error.empty()) {
+        batch_error_ = error;
+        batch_kind_ = InputKind::None;
+        input_kind_ = InputKind::None;
+        message_ = error;
+        update_state(UiState::Error, error);
+        update_controls();
+        return;
+    }
+    batch_scanned_ = true;
+    batch_kind_ = batch_items_.empty() ? InputKind::None : batch_items_.front().kind;
+    input_kind_ = batch_kind_;
+    if (!output_supported(input_kind_, output_kind_)) output_kind_ = default_output(input_kind_);
+    if (output_path_.empty()) {
+        output_path_ = (fs::path(path).parent_path() / (fs::path(path).filename().wstring() + L"_converted")).wstring();
+    }
+    set_text(output_edit_, output_path_);
+    update_state(UiState::Ready, L"Ready to convert " + std::to_wstring(batch_items_.size()) + L" files");
+}
+
+void StudioApp::set_output_kind(OutputKind kind) {
+    if (!output_supported(input_kind_, kind)) return;
+    output_kind_ = kind;
+    if (view_ == View::Single && !source_path_.empty()) {
+        output_path_ = suggested_output(fs::path(source_path_), input_kind_, output_kind_).wstring();
+        set_text(output_edit_, output_path_);
+    }
+    update_controls();
+    layout();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void StudioApp::on_source_committed() {
+    std::wstring path = get_text(source_edit_);
+    if (path == (view_ == View::Batch ? batch_root_ : source_path_)) return;
+    set_source(path);
+}
+
+void StudioApp::browse_source_file() {
+    std::wstring path = pick_file(hwnd_, L"Choose a recording");
+    if (path.empty()) return;
+    set_text(source_edit_, path);
+    source_path_ = path;
+    set_source(path);
+}
+
+void StudioApp::browse_source_folder() {
+    std::wstring path = pick_folder(hwnd_, view_ == View::Batch ? L"Choose a folder of recordings"
+                                                                 : L"Choose a ROS 2 bag folder");
+    if (path.empty()) return;
+    set_text(source_edit_, path);
+    source_path_ = path;
+    set_source(path);
+}
+
+void StudioApp::browse_output() {
+    if (view_ == View::Batch || output_kind_ == OutputKind::Ros2Bag) {
+        std::wstring path = pick_folder(hwnd_, L"Choose an output folder");
+        if (!path.empty()) {
+            output_path_ = path;
+            set_text(output_edit_, path);
+            update_controls();
+        }
+        return;
+    }
+    const wchar_t *filter = L"K4A recording (*.mkv)\0*.mkv\0";
+    const wchar_t *ext = L"mkv";
+    if (output_kind_ == OutputKind::Ros1Bag) {
+        filter = L"ROS 1 bag (*.bag)\0*.bag\0";
+        ext = L"bag";
+    } else if (output_kind_ == OutputKind::OrbbecBag) {
+        filter = L"Orbbec bag (*.bag)\0*.bag\0";
+        ext = L"bag";
+    }
+    std::wstring suggested = output_path_;
+    if (suggested.empty() && !source_path_.empty()) {
+        suggested = suggested_output(fs::path(source_path_), input_kind_, output_kind_).wstring();
+    }
+    std::wstring path = pick_save(hwnd_, L"Choose an output file", filter, ext);
+    if (path.empty()) return;
+    output_path_ = path;
+    set_text(output_edit_, path);
+    update_controls();
+}
+
+void StudioApp::browse_calibration() {
+    wchar_t path[MAX_PATH] = {};
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = hwnd;
-    ofn.lpstrFilter = L"Calibration JSON (*.json)\0*.json\0All files (*.*)\0*.*\0";
-    ofn.lpstrFile = file;
+    ofn.hwndOwner = hwnd_;
+    ofn.lpstrFilter = L"K4A calibration (*.json)\0*.json\0All files\0*.*\0";
+    ofn.lpstrFile = path;
     ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrTitle = L"Choose calibration.json";
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
-    ofn.lpstrTitle = L"选择同设备/同模式的 calibration.json";
     if (!GetOpenFileNameW(&ofn)) return;
-    SetWindowTextW(hCalib, file);
+    calib_path_ = path;
+    set_text(calib_edit_, calib_path_);
 }
 
-void App::start_conversion() {
-    std::wstring input = get_text(hInput);
-    std::wstring output = get_text(hOutput);
-    if (input.empty()) {
-        MessageBoxW(hwnd, L"请先选择输入 bag 文件。", L"bag2mkv", MB_ICONINFORMATION | MB_OK);
+void StudioApp::browse_for_output() { browse_output(); }
+
+void StudioApp::start() {
+    if (busy_) return;
+    commit_source_from_edit();
+    if (view_ == View::Batch && batch_root_ != get_text(source_edit_)) {
+        refresh_batch(get_text(source_edit_));
+    }
+    if (input_kind_ == InputKind::None) {
+        update_state(UiState::Error, message_.empty() ? L"Choose a valid source." : message_);
         return;
     }
-    if (!std::filesystem::exists(std::filesystem::path(input))) {
-        MessageBoxW(hwnd, L"输入 bag 文件不存在。", L"bag2mkv", MB_ICONERROR | MB_OK);
+    output_path_ = get_text(output_edit_);
+    if (output_path_.empty()) {
+        update_state(UiState::Error, L"Choose an output destination.");
         return;
     }
-    if (std::filesystem::is_directory(std::filesystem::path(input))) {
-        if (output.empty()) {
-            MessageBoxW(hwnd, L"请选择输出目录。", L"bag2mkv", MB_ICONINFORMATION | MB_OK);
+
+    std::vector<ConversionJob> jobs;
+    if (view_ == View::Batch) {
+        if (batch_items_.empty()) {
+            update_state(UiState::Error, L"No recordings found in the source folder.");
             return;
         }
-        start_directory_batch(input, output);
-        return;
-    }
-    std::wstring input_ext = std::filesystem::path(input).extension().wstring();
-    std::transform(input_ext.begin(), input_ext.end(), input_ext.begin(),
-                   [](wchar_t c) { return static_cast<wchar_t>(towlower(c)); });
-    if (input_ext == L".mkv") {
-        if (output.empty() || std::filesystem::is_directory(std::filesystem::path(output))) {
-            std::filesystem::path out = output.empty()
-                ? std::filesystem::path(input)
-                : std::filesystem::path(output) / std::filesystem::path(input).filename();
-            out.replace_extension(L".bag");
-            output = out.wstring();
-            SetWindowTextW(hOutput, output.c_str());
-        }
-        start_mkv2bag_paths(input, output);
-        return;
-    }
-    if (output.empty() || std::filesystem::is_directory(std::filesystem::path(output))) {
-        std::filesystem::path out = output.empty()
-            ? std::filesystem::path(input)
-            : std::filesystem::path(output) / std::filesystem::path(input).filename();
-        out.replace_extension(L".mkv");
-        output = out.wstring();
-        SetWindowTextW(hOutput, output.c_str());
-    }
-    if (input == output) {
-        MessageBoxW(hwnd, L"输入和输出不能是同一个文件。", L"bag2mkv", MB_ICONERROR | MB_OK);
-        return;
-    }
-
-    bool force = SendMessageW(hForce, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    if (!force && std::filesystem::exists(std::filesystem::path(output))) {
-        int answer = MessageBoxW(hwnd, L"输出文件已存在，是否覆盖？", L"bag2mkv",
-                                 MB_ICONQUESTION | MB_YESNO | MB_DEFBUTTON2);
-        if (answer != IDYES) return;
-        force = true;
-    }
-
-    ConvertOptions options;
-    options.input_bag = narrow(input);
-    options.output_mkv = narrow(output);
-    options.force = force;
-    options.no_calibration = SendMessageW(hNoCalib, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    options.verify_after = SendMessageW(hVerify, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    options.color_output =
-        SendMessageW(hColor, CB_GETCURSEL, 0, 0) == 1 ? ColorOutput::Mjpg : ColorOutput::Bgra;
-    options.preserve_source_color =
-        options.color_output == ColorOutput::Bgra &&
-        SendMessageW(hPreserve, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    std::wstring calib = get_text(hCalib);
-    if (!calib.empty()) {
-        if (!std::filesystem::exists(std::filesystem::path(calib))) {
-            MessageBoxW(hwnd, L"calibration.json 不存在。", L"bag2mkv", MB_ICONERROR | MB_OK);
+        if (is_subpath(fs::path(output_path_), fs::path(batch_root_))) {
+            update_state(UiState::Error, L"Output folder must be outside the input folder.");
             return;
         }
-        options.calibration_json_path = narrow(calib);
-    }
-
-    if (worker.joinable()) {
-        worker.join();
-    }
-    cancel = false;
-    close_when_done = false;
-    batch_mode = false;
-    batch_index = 0;
-    batch_total = 0;
-    last_output_dir.clear();
-    set_running(true);
-    reset_progress();
-    SetWindowTextW(hLog, L"");
-    set_status(L"正在转换...");
-    append_log(L"输入: " + input);
-    append_log(L"输出: " + output);
-    append_log(L"彩色: " + std::wstring(options.color_output == ColorOutput::Bgra ? L"BGRA 1080p" : L"MJPEG"));
-    append_log(L"验证: " + std::wstring(options.verify_after ? L"开" : L"关"));
-
-    worker = std::thread([this, options]() {
-        try {
-            ConvertSummary summary = convert_bag(
-                options,
-                [this](const ProgressInfo &info) -> bool {
-                    if (cancel.load()) return false;
-                    auto *copy = new ProgressInfo(info);
-                    if (!PostMessageW(hwnd, WM_APP_PROGRESS, 0, reinterpret_cast<LPARAM>(copy))) {
-                        delete copy;
-                        return false;
-                    }
-                    return true;
-                },
-                [this](const std::string &line) {
-                    auto *copy = new std::wstring(widen(line));
-                    if (!PostMessageW(hwnd, WM_APP_LOG, 0, reinterpret_cast<LPARAM>(copy))) {
-                        delete copy;
-                    }
-                });
-            auto *copy = new ConvertSummary(summary);
-            if (!PostMessageW(hwnd, WM_APP_DONE, 0, reinterpret_cast<LPARAM>(copy))) {
-                delete copy;
-            }
-        } catch (const CancelledError &) {
-            PostMessageW(hwnd, WM_APP_CANCELLED, 0, 0);
-        } catch (const std::exception &e) {
-            auto *copy = new std::wstring(widen(e.what()));
-            if (!PostMessageW(hwnd, WM_APP_ERROR, 0, reinterpret_cast<LPARAM>(copy))) {
-                delete copy;
-            }
-        }
-    });
-}
-
-void App::start_directory_batch(const std::wstring &input_dir, const std::wstring &output_dir) {
-    std::error_code ec;
-    if (!std::filesystem::is_directory(std::filesystem::path(input_dir), ec) || ec) {
-        MessageBoxW(hwnd, L"输入目录不存在。", L"bag2mkv", MB_ICONERROR | MB_OK);
-        return;
-    }
-    if (output_dir.empty()) {
-        MessageBoxW(hwnd, L"请选择输出目录。", L"bag2mkv", MB_ICONINFORMATION | MB_OK);
-        return;
-    }
-
-    std::vector<std::filesystem::path> bags;
-    std::vector<std::filesystem::path> mkvs;
-    uint64_t other_files = 0;
-    std::filesystem::recursive_directory_iterator it(
-        input_dir, std::filesystem::directory_options::skip_permission_denied, ec);
-    const std::filesystem::recursive_directory_iterator end;
-    for (; it != end; it.increment(ec)) {
-        if (ec) {
-            MessageBoxW(hwnd, (L"无法读取输入目录：\n" + input_dir).c_str(), L"bag2mkv", MB_ICONERROR | MB_OK);
+        std::wstring error;
+        jobs = build_batch_jobs(batch_items_, fs::path(batch_root_), fs::path(output_path_), output_kind_, overwrite_,
+                                verify_, no_calibration_, preserve_, color_mjpg_, fs::path(calib_path_), error);
+        if (!error.empty()) {
+            update_state(UiState::Error, error);
             return;
         }
-        if (!it->is_regular_file()) continue;
-        std::wstring ext = it->path().extension().wstring();
-        std::transform(ext.begin(), ext.end(), ext.begin(),
-                       [](wchar_t c) { return static_cast<wchar_t>(towlower(c)); });
-        if (ext == L".bag") {
-            bags.push_back(it->path());
-        } else if (ext == L".mkv") {
-            mkvs.push_back(it->path());
-        } else {
-            ++other_files;
-        }
-    }
-    if (ec) {
-        MessageBoxW(hwnd, (L"无法读取输入目录：\n" + input_dir).c_str(), L"bag2mkv", MB_ICONERROR | MB_OK);
-        return;
-    }
-    std::sort(bags.begin(), bags.end());
-    std::sort(mkvs.begin(), mkvs.end());
-
-    if (!bags.empty() && !mkvs.empty()) {
-        MessageBoxW(hwnd,
-                    (L"输入目录同时包含 bag 和 mkv，无法判断转换方向。\n\nbag: " + std::to_wstring(bags.size()) +
-                     L"\nmkv: " + std::to_wstring(mkvs.size()) +
-                     L"\n\n请让第一个目录只包含 bag 或只包含 mkv。").c_str(),
-                    L"bag2mkv", MB_ICONERROR | MB_OK);
-        return;
-    }
-    if (bags.empty() && mkvs.empty()) {
-        MessageBoxW(hwnd, L"输入目录及其子目录中没有 bag 或 mkv 文件。", L"bag2mkv",
-                    MB_ICONINFORMATION | MB_OK);
-        return;
-    }
-
-    const bool input_is_bag = !bags.empty();
-    const auto &files = input_is_bag ? bags : mkvs;
-    const std::wstring target_ext = input_is_bag ? L".mkv" : L".bag";
-
-    std::filesystem::create_directories(output_dir, ec);
-    if (ec) {
-        MessageBoxW(hwnd, (L"无法创建输出目录：\n" + output_dir).c_str(), L"bag2mkv", MB_ICONERROR | MB_OK);
-        return;
-    }
-    const std::filesystem::path input_abs = std::filesystem::weakly_canonical(input_dir, ec);
-    if (ec) {
-        MessageBoxW(hwnd, (L"无法解析输入目录：\n" + input_dir).c_str(), L"bag2mkv", MB_ICONERROR | MB_OK);
-        return;
-    }
-    const std::filesystem::path output_abs = std::filesystem::weakly_canonical(output_dir, ec);
-    if (ec) {
-        MessageBoxW(hwnd, (L"无法解析输出目录：\n" + output_dir).c_str(), L"bag2mkv", MB_ICONERROR | MB_OK);
-        return;
-    }
-    std::wstring input_abs_text = input_abs.wstring();
-    std::wstring output_abs_text = output_abs.wstring();
-    std::transform(input_abs_text.begin(), input_abs_text.end(), input_abs_text.begin(),
-                   [](wchar_t c) { return static_cast<wchar_t>(towlower(c)); });
-    std::transform(output_abs_text.begin(), output_abs_text.end(), output_abs_text.begin(),
-                   [](wchar_t c) { return static_cast<wchar_t>(towlower(c)); });
-    const std::wstring input_prefix = input_abs_text + L"\\";
-    if (output_abs_text == input_abs_text || output_abs_text.rfind(input_prefix, 0) == 0) {
-        MessageBoxW(hwnd, L"输出目录不能是输入目录或其子目录，否则下次运行会混入另一种格式。", L"bag2mkv",
-                    MB_ICONERROR | MB_OK);
-        return;
-    }
-
-    std::vector<std::filesystem::path> outputs;
-    outputs.reserve(files.size());
-    std::set<std::wstring> seen_outputs;
-    for (const auto &file : files) {
-        std::error_code rel_ec;
-        std::filesystem::path rel = std::filesystem::relative(file, input_dir, rel_ec);
-        if (rel_ec || rel.empty()) rel = file.filename();
-        std::filesystem::path out = std::filesystem::path(output_dir) / rel.parent_path() / rel.stem();
-        out.replace_extension(target_ext);
-        std::wstring key = out.wstring();
-        std::transform(key.begin(), key.end(), key.begin(),
-                       [](wchar_t c) { return static_cast<wchar_t>(towlower(c)); });
-        if (!seen_outputs.insert(key).second) {
-            MessageBoxW(hwnd, (L"输出路径冲突：\n" + out.wstring()).c_str(), L"bag2mkv",
-                        MB_ICONERROR | MB_OK);
-            return;
-        }
-        outputs.push_back(out);
-    }
-
-    bool force = SendMessageW(hForce, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    if (!force) {
-        int existing = 0;
-        for (const auto &out : outputs) {
-            std::error_code exists_ec;
-            if (std::filesystem::exists(out, exists_ec) && !exists_ec) ++existing;
-        }
-        if (existing > 0) {
-            int answer = MessageBoxW(hwnd,
-                                     (L"输出目录中已有 " + std::to_wstring(existing) +
-                                      L" 个目标文件，是否全部覆盖？").c_str(),
-                                     L"bag2mkv", MB_ICONQUESTION | MB_YESNO | MB_DEFBUTTON2);
-            if (answer != IDYES) return;
-            force = true;
-        }
-    }
-
-    ConvertOptions base;
-    base.force = force;
-    base.no_calibration = SendMessageW(hNoCalib, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    base.verify_after = SendMessageW(hVerify, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    base.color_output =
-        SendMessageW(hColor, CB_GETCURSEL, 0, 0) == 1 ? ColorOutput::Mjpg : ColorOutput::Bgra;
-    base.preserve_source_color =
-        base.color_output == ColorOutput::Bgra &&
-        SendMessageW(hPreserve, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    if (input_is_bag) {
-        std::wstring calib = get_text(hCalib);
-        if (!calib.empty()) {
-            if (!std::filesystem::exists(std::filesystem::path(calib))) {
-                MessageBoxW(hwnd, L"calibration.json 不存在。", L"bag2mkv", MB_ICONERROR | MB_OK);
-                return;
-            }
-            base.calibration_json_path = narrow(calib);
-        }
-    }
-
-    uint64_t input_bytes = 0;
-    uint64_t existing_bytes = 0;
-    bool sizes_ok = true;
-    for (size_t i = 0; i < files.size(); ++i) {
-        std::error_code size_ec;
-        const uint64_t size = std::filesystem::file_size(files[i], size_ec);
-        if (size_ec) {
-            sizes_ok = false;
-            break;
-        }
-        input_bytes += size;
-        const uint64_t out_size = std::filesystem::file_size(outputs[i], size_ec);
-        if (!size_ec) existing_bytes += out_size;
-    }
-    if (sizes_ok && input_bytes > 0) {
-        const double factor = input_is_bag ? (base.color_output == ColorOutput::Bgra ? 16.0 : 1.7) : 1.2;
-        const uint64_t estimate = uint64_t(double(input_bytes) * factor) + 64ull * 1024ull * 1024ull;
-        std::error_code space_ec;
-        const std::filesystem::space_info space = std::filesystem::space(output_dir, space_ec);
-        if (!space_ec && space.available > 0) {
-            const uint64_t available = space.available + existing_bytes;
-            if (estimate > available) {
-                MessageBoxW(hwnd,
-                            (L"磁盘空间不足，尚未开始转换。\n\n文件数：" + std::to_wstring(files.size()) +
-                             L"\n预计输出：" + human_size(estimate) + L"\n输出盘可用：" + human_size(available) +
-                             L"\n\n可以改用 MJPEG 模式或增加磁盘空间。").c_str(),
-                            L"bag2mkv", MB_ICONERROR | MB_OK);
-                return;
-            }
-        }
-    }
-
-    if (worker.joinable()) worker.join();
-    cancel = false;
-    close_when_done = false;
-    batch_mode = true;
-    batch_total = files.size();
-    batch_index = 0;
-    last_output_dir = output_dir;
-    set_running(true);
-    reset_progress();
-    SetWindowTextW(hLog, L"");
-    set_status(input_is_bag ? L"正在批量转换 bag → mkv..." : L"正在批量转换 mkv → bag...");
-    append_log(L"输入目录: " + input_dir);
-    append_log(L"输出目录: " + output_dir);
-    append_log(std::wstring(L"方向: ") + (input_is_bag ? L"bag → mkv" : L"mkv → bag"));
-    append_log(L"文件数: " + std::to_wstring(files.size()));
-    if (other_files > 0) {
-        append_log(L"已忽略 " + std::to_wstring(other_files) + L" 个其他文件");
-    }
-
-    worker = std::thread([this, input_is_bag, files, outputs, force, base]() {
-        BatchResult result;
-        result.total = files.size();
-        result.output_dir = last_output_dir;
-        for (size_t i = 0; i < files.size(); ++i) {
-            if (cancel.load()) {
-                PostMessageW(hwnd, WM_APP_CANCELLED, 0, 0);
-                return;
-            }
-            batch_index = i + 1;
-            std::wstring prefix = L"[" + std::to_wstring(i + 1) + L"/" + std::to_wstring(files.size()) + L"] ";
-            auto *start_line = new std::wstring(prefix + files[i].wstring() + L" -> " + outputs[i].wstring());
-            if (!PostMessageW(hwnd, WM_APP_LOG, 0, reinterpret_cast<LPARAM>(start_line))) {
-                delete start_line;
-            }
-            try {
-                if (input_is_bag) {
-                    ConvertOptions options = base;
-                    options.input_bag = narrow(files[i].wstring());
-                    options.output_mkv = narrow(outputs[i].wstring());
-                    convert_bag(
-                        options,
-                        [this, prefix](const ProgressInfo &info) -> bool {
-                            if (cancel.load()) return false;
-                            auto *copy = new ProgressInfo(info);
-                            copy->message = narrow(prefix) + copy->message;
-                            if (!PostMessageW(hwnd, WM_APP_PROGRESS, 0, reinterpret_cast<LPARAM>(copy))) {
-                                delete copy;
-                                return false;
-                            }
-                            return true;
-                        },
-                        [this, prefix](const std::string &line) {
-                            auto *copy = new std::wstring(prefix + widen(line));
-                            if (!PostMessageW(hwnd, WM_APP_LOG, 0, reinterpret_cast<LPARAM>(copy))) {
-                                delete copy;
-                            }
-                        });
-                } else {
-                    Mkv2BagOptions options;
-                    options.input_mkv = narrow(files[i].wstring());
-                    options.output_bag = narrow(outputs[i].wstring());
-                    options.force = force;
-                    mkv_to_bag(
-                        options,
-                        [this, prefix](const std::string &line) {
-                            auto *copy = new std::wstring(prefix + widen(line));
-                            if (!PostMessageW(hwnd, WM_APP_LOG, 0, reinterpret_cast<LPARAM>(copy))) {
-                                delete copy;
-                            }
-                        },
-                        [this, prefix, i, total = files.size()](uint64_t current, uint64_t) -> bool {
-                            if (cancel.load()) return false;
-                            if (current % 100 == 0) {
-                                auto *info = new ProgressInfo{Stage::Writing, i + 1, total,
-                                                              narrow(prefix) + "mkv2bag " +
-                                                                  std::to_string(current)};
-                                if (!PostMessageW(hwnd, WM_APP_PROGRESS, 0,
-                                                  reinterpret_cast<LPARAM>(info))) {
-                                    delete info;
-                                    return false;
-                                }
-                            }
-                            return true;
-                        });
-                }
-                ++result.succeeded;
-            } catch (const CancelledError &) {
-                PostMessageW(hwnd, WM_APP_CANCELLED, 0, 0);
-                return;
-            } catch (const std::exception &e) {
-                ++result.failed;
-                auto *error_line = new std::wstring(prefix + L"错误: " + widen(e.what()));
-                if (!PostMessageW(hwnd, WM_APP_LOG, 0, reinterpret_cast<LPARAM>(error_line))) {
-                    delete error_line;
-                }
-            }
-        }
-        auto *copy = new BatchResult(result);
-        if (!PostMessageW(hwnd, WM_APP_BATCH_DONE, 0, reinterpret_cast<LPARAM>(copy))) {
-            delete copy;
-        }
-    });
-}
-void App::start_batch() {
-    std::wstring input_dir = pick_folder(hwnd, L"选择输入目录（只含 bag 或只含 mkv）");
-    if (input_dir.empty()) return;
-    std::wstring output_dir = pick_folder(hwnd, L"选择输出目录");
-    if (output_dir.empty()) return;
-    start_directory_batch(input_dir, output_dir);
-}
-
-void App::start_batch_dirs(const std::wstring &input_dir, const std::wstring &output_dir) {
-    std::error_code ec;
-    std::vector<std::filesystem::path> bags;
-    std::filesystem::recursive_directory_iterator it(
-        input_dir, std::filesystem::directory_options::skip_permission_denied, ec);
-    const std::filesystem::recursive_directory_iterator end;
-    for (; it != end; it.increment(ec)) {
-        if (ec) {
-            MessageBoxW(hwnd, (L"无法读取输入目录：\n" + input_dir).c_str(), L"bag2mkv", MB_ICONERROR | MB_OK);
-            return;
-        }
-        if (!it->is_regular_file()) continue;
-        std::wstring ext = it->path().extension().wstring();
-        std::transform(ext.begin(), ext.end(), ext.begin(), [](wchar_t c) { return static_cast<wchar_t>(towlower(c)); });
-        if (ext == L".bag") bags.push_back(it->path());
-    }
-    if (ec) {
-        MessageBoxW(hwnd, (L"无法读取输入目录：\n" + input_dir).c_str(), L"bag2mkv", MB_ICONERROR | MB_OK);
-        return;
-    }
-    std::sort(bags.begin(), bags.end());
-    if (bags.empty()) {
-        MessageBoxW(hwnd, L"该目录及其子目录下没有 .bag 文件。", L"bag2mkv", MB_ICONINFORMATION | MB_OK);
-        return;
-    }
-    {
-        std::set<std::wstring> stems;
-        for (const auto &bag : bags) {
-            std::wstring stem = bag.stem().wstring();
-            std::transform(stem.begin(), stem.end(), stem.begin(),
-                           [](wchar_t c) { return static_cast<wchar_t>(towlower(c)); });
-            if (!stems.insert(stem).second) {
-                MessageBoxW(hwnd,
-                            (L"输入目录中存在同名 bag，输出会冲突：\n" + bag.wstring() +
-                             L"\n\n请先拆分目录，或改用 CLI 并自行处理命名。").c_str(),
-                            L"bag2mkv", MB_ICONERROR | MB_OK);
-                return;
-            }
-        }
-    }
-    std::filesystem::create_directories(output_dir, ec);
-    if (ec) {
-        MessageBoxW(hwnd, (L"无法创建输出目录：\n" + output_dir).c_str(), L"bag2mkv", MB_ICONERROR | MB_OK);
-        return;
-    }
-
-    bool force = SendMessageW(hForce, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    if (!force) {
-        int existing = 0;
-        for (const auto &bag : bags) {
-            std::filesystem::path out = std::filesystem::path(output_dir) / (bag.stem().wstring() + L".mkv");
-            if (std::filesystem::exists(out)) ++existing;
-        }
-        if (existing > 0) {
-            int answer = MessageBoxW(hwnd, L"部分输出文件已存在，是否全部覆盖？", L"bag2mkv",
-                                     MB_ICONQUESTION | MB_YESNO | MB_DEFBUTTON2);
-            if (answer != IDYES) return;
-            force = true;
-        }
-    }
-
-    ConvertOptions base;
-    base.force = force;
-    base.no_calibration = SendMessageW(hNoCalib, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    base.verify_after = SendMessageW(hVerify, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    base.color_output =
-        SendMessageW(hColor, CB_GETCURSEL, 0, 0) == 1 ? ColorOutput::Mjpg : ColorOutput::Bgra;
-    base.preserve_source_color =
-        base.color_output == ColorOutput::Bgra &&
-        SendMessageW(hPreserve, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    std::wstring calib = get_text(hCalib);
-    if (!calib.empty()) {
-        if (!std::filesystem::exists(std::filesystem::path(calib))) {
-            MessageBoxW(hwnd, L"calibration.json 不存在。", L"bag2mkv", MB_ICONERROR | MB_OK);
-            return;
-        }
-        base.calibration_json_path = narrow(calib);
-    }
-
-    uint64_t input_bytes = 0;
-    uint64_t existing_bytes = 0;
-    bool input_sizes_ok = true;
-    for (const auto &bag : bags) {
-        std::error_code size_ec;
-        uint64_t size = std::filesystem::file_size(bag, size_ec);
-        if (size_ec) {
-            input_sizes_ok = false;
-            break;
-        }
-        input_bytes += size;
-        std::filesystem::path out = std::filesystem::path(output_dir) / (bag.stem().wstring() + L".mkv");
-        size = std::filesystem::file_size(out, size_ec);
-        if (!size_ec) existing_bytes += size;
-    }
-    if (input_sizes_ok && input_bytes > 0) {
-        const double factor = base.color_output == ColorOutput::Bgra ? 16.0 : 1.7;
-        const uint64_t estimate = uint64_t(double(input_bytes) * factor) + 64ull * 1024ull * 1024ull;
-        std::error_code space_ec;
-        std::filesystem::space_info space = std::filesystem::space(output_dir, space_ec);
-        if (!space_ec && space.available > 0) {
-            const uint64_t available = space.available + existing_bytes;
-            if (estimate > available) {
-                std::wstring message = L"批量空间不足，未开始转换。\n\n文件数：" + std::to_wstring(bags.size()) +
-                                       L"\n预计输出：" + human_size(estimate) +
-                                       L"\n输出盘可用：" + human_size(available) +
-                                       L"\n\n可以改用 MJPEG 模式、增加磁盘空间，或先处理一部分文件。";
-                MessageBoxW(hwnd, message.c_str(), L"bag2mkv", MB_ICONERROR | MB_OK);
-                return;
-            }
-        }
-    }
-
-    if (worker.joinable()) worker.join();
-    cancel = false;
-    close_when_done = false;
-    batch_mode = true;
-    batch_total = bags.size();
-    batch_index = 0;
-    set_running(true);
-    reset_progress();
-    SetWindowTextW(hLog, L"");
-    set_status(L"批量转换中...");
-    append_log(L"批量输入: " + input_dir);
-    append_log(L"批量输出: " + output_dir);
-    append_log(L"文件数: " + std::to_wstring(bags.size()));
-
-    worker = std::thread([this, base, bags, output_dir]() {
-        BatchResult result;
-        result.total = bags.size();
-        result.output_dir = output_dir;
-        for (size_t i = 0; i < bags.size(); ++i) {
-            if (cancel.load()) {
-                PostMessageW(hwnd, WM_APP_CANCELLED, 0, 0);
-                return;
-            }
-            batch_index = i + 1;
-            std::wstring out_path = (std::filesystem::path(output_dir) /
-                                     (bags[i].stem().wstring() + L".mkv")).wstring();
-            std::wstring prefix = L"[" + std::to_wstring(i + 1) + L"/" + std::to_wstring(bags.size()) + L"] ";
-            auto *start_line = new std::wstring(prefix + bags[i].wstring() + L" -> " + out_path);
-            if (!PostMessageW(hwnd, WM_APP_LOG, 0, reinterpret_cast<LPARAM>(start_line))) {
-                delete start_line;
-            }
-            ConvertOptions options = base;
-            options.input_bag = narrow(bags[i].wstring());
-            options.output_mkv = narrow(out_path);
-            try {
-                convert_bag(
-                    options,
-                    [this, prefix](const ProgressInfo &info) -> bool {
-                        if (cancel.load()) return false;
-                        auto *copy = new ProgressInfo(info);
-                        copy->message = narrow(prefix) + copy->message;
-                        if (!PostMessageW(hwnd, WM_APP_PROGRESS, 0, reinterpret_cast<LPARAM>(copy))) {
-                            delete copy;
-                            return false;
-                        }
-                        return true;
-                    },
-                    [this, prefix](const std::string &line) {
-                        auto *copy = new std::wstring(prefix + widen(line));
-                        if (!PostMessageW(hwnd, WM_APP_LOG, 0, reinterpret_cast<LPARAM>(copy))) {
-                            delete copy;
-                        }
-                    });
-                ++result.succeeded;
-            } catch (const CancelledError &) {
-                PostMessageW(hwnd, WM_APP_CANCELLED, 0, 0);
-                return;
-            } catch (const std::exception &e) {
-                ++result.failed;
-                auto *error_line = new std::wstring(prefix + L"错误: " + widen(e.what()));
-                if (!PostMessageW(hwnd, WM_APP_LOG, 0, reinterpret_cast<LPARAM>(error_line))) {
-                    delete error_line;
-                }
-            }
-        }
-        auto *copy = new BatchResult(result);
-        if (!PostMessageW(hwnd, WM_APP_BATCH_DONE, 0, reinterpret_cast<LPARAM>(copy))) {
-            delete copy;
-        }
-    });
-}
-
-void App::start_mkv2bag() {
-    std::wstring input = pick_mkv_file(hwnd);
-    if (input.empty()) return;
-
-    std::filesystem::path suggested(input);
-    suggested.replace_extension(".bag");
-    std::wstring output = pick_bag_save(hwnd, suggested.wstring());
-    if (output.empty()) return;
-    start_mkv2bag_paths(input, output);
-}
-
-void App::start_mkv2bag_paths(const std::wstring &input, const std::wstring &output) {
-    if (input.empty() || output.empty()) return;
-    if (worker.joinable()) worker.join();
-    cancel = false;
-    close_when_done = false;
-    batch_mode = false;
-    batch_index = 0;
-    batch_total = 0;
-    last_output_dir = std::filesystem::path(output).parent_path().wstring();
-    if (last_output_dir.empty()) last_output_dir = L".";
-    set_running(true);
-    reset_progress();
-    SetWindowTextW(hLog, L"");
-    set_status(L"MKV 转 bag...");
-    append_log(L"MKV 转 bag: " + input + L" -> " + output);
-
-    worker = std::thread([this, input, output]() {
-        Mkv2BagOptions options;
-        options.input_mkv = narrow(input);
-        options.output_bag = narrow(output);
-        options.force = true;  // GetSaveFileName already confirmed overwrite
-        try {
-            Mkv2BagSummary summary = mkv_to_bag(
-                options,
-                [this](const std::string &line) {
-                    auto *copy = new std::wstring(widen(line));
-                    if (!PostMessageW(hwnd, WM_APP_LOG, 0, reinterpret_cast<LPARAM>(copy))) {
-                        delete copy;
-                    }
-                },
-                [this](uint64_t current, uint64_t) -> bool {
-                    if (cancel.load()) return false;
-                    if (current % 100 == 0) {
-                        auto *copy = new std::wstring(L"已处理 " + std::to_wstring(current) + L" 帧");
-                        if (!PostMessageW(hwnd, WM_APP_LOG, 0, reinterpret_cast<LPARAM>(copy))) {
-                            delete copy;
-                        }
-                    }
-                    return true;
-                });
-            auto *result = new ToBagResult{summary, output};
-            if (!PostMessageW(hwnd, WM_APP_TO_BAG_DONE, 0, reinterpret_cast<LPARAM>(result))) {
-                delete result;
-            }
-        } catch (const CancelledError &) {
-            PostMessageW(hwnd, WM_APP_CANCELLED, 0, 0);
-        } catch (const std::exception &e) {
-            auto *error = new std::wstring(widen(e.what()));
-            if (!PostMessageW(hwnd, WM_APP_ERROR, 0, reinterpret_cast<LPARAM>(error))) {
-                delete error;
-            }
-        }
-    });
-}
-
-void App::request_cancel() {
-    if (!running) return;
-    cancel = true;
-    EnableWindow(hCancel, FALSE);
-    set_status(L"正在取消...");
-    append_log(L"用户请求取消，等待当前帧结束...");
-}
-
-void App::open_output_folder() {
-    std::wstring folder = last_output_dir;
-    if (folder.empty() && !last_summary.output_path.empty()) {
-        folder = std::filesystem::path(last_summary.output_path).parent_path().wstring();
-    }
-    if (folder.empty()) return;
-    ShellExecuteW(hwnd, L"open", folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-}
-
-void App::on_progress(const ProgressInfo &info) {
-    std::wstring stage;
-    switch (info.stage) {
-        case Stage::Scanning: stage = L"扫描 bag"; break;
-        case Stage::Preparing: stage = L"准备元数据"; break;
-        case Stage::Writing: stage = L"写入帧"; break;
-        case Stage::Finalizing: stage = L"完成文件"; break;
-        case Stage::Verifying: stage = L"验证"; break;
-        case Stage::Done: stage = L"完成"; break;
-    }
-    if (info.total > 0) {
-        int pos = int((info.current * 1000) / info.total);
-        SendMessageW(hProgress, PBM_SETPOS, pos, 0);
-    }
-    if (info.stage == Stage::Writing || info.stage == Stage::Verifying || info.stage == Stage::Scanning) {
-        wchar_t buf[160];
-        if (batch_mode) {
-            swprintf_s(buf, L"[%llu/%llu] %s：%llu / %llu",
-                       static_cast<unsigned long long>(batch_index.load()),
-                       static_cast<unsigned long long>(batch_total), stage.c_str(),
-                       static_cast<unsigned long long>(info.current),
-                       static_cast<unsigned long long>(info.total));
-        } else {
-            swprintf_s(buf, L"%s：%llu / %llu", stage.c_str(), static_cast<unsigned long long>(info.current),
-                       static_cast<unsigned long long>(info.total));
-        }
-        set_status(buf);
     } else {
-        set_status(stage + L"...");
+        if (!output_supported(input_kind_, output_kind_)) {
+            update_state(UiState::Error, L"This output format is not supported for this input.");
+            return;
+        }
+        ConversionJob job;
+        job.input = fs::path(source_path_);
+        job.output = fs::path(output_path_);
+        job.input_kind = input_kind_;
+        job.output_kind = output_kind_;
+        job.force = overwrite_;
+        job.verify = verify_;
+        job.no_calibration = no_calibration_;
+        job.preserve_source_color = preserve_;
+        job.color_mjpg = color_mjpg_;
+        job.calibration_json = fs::path(calib_path_);
+        jobs.push_back(std::move(job));
     }
-}
 
-void App::on_done(const ConvertSummary &summary) {
-    if (worker.joinable()) worker.join();
-    batch_mode = false;
-    last_summary = summary;
-    last_output_dir = std::filesystem::path(summary.output_path).parent_path().wstring();
-    if (last_output_dir.empty()) last_output_dir = L".";
-    set_running(false);
-    cancel = false;
-    SendMessageW(hProgress, PBM_SETPOS, 1000, 0);
-    std::wstring status = L"转换完成";
-    if (summary.verified) status += L"（验证通过）";
-    set_status(status);
-    append_log(L"完成: " + widen(summary.output_path));
-    append_log(L"大小: " + human_size(summary.output_size));
-    append_log(L"帧: " + std::to_wstring(summary.total_frames) + L"（COLOR " +
-               std::to_wstring(summary.color_frames) + L", DEPTH " + std::to_wstring(summary.depth_frames) + L"）");
-    append_log(L"标定: " + widen(summary.calibration_source));
-    EnableWindow(hOpen, TRUE);
-    std::wstring message = L"转换完成。\n\n输出：\n" + widen(summary.output_path) + L"\n\n大小：" +
-                           human_size(summary.output_size);
-    if (summary.verified) message += L"\n验证：通过";
-    MessageBoxW(hwnd, message.c_str(), L"bag2mkv", MB_ICONINFORMATION | MB_OK);
-    if (close_when_done) {
-        DestroyWindow(hwnd);
-    }
-}
-
-void App::on_batch_done(const BatchResult &result) {
-    if (worker.joinable()) worker.join();
-    batch_mode = false;
-    last_output_dir = result.output_dir;
-    set_running(false);
-    cancel = false;
-    SendMessageW(hProgress, PBM_SETPOS, 1000, 0);
-    std::wstring status = L"批量完成：" + std::to_wstring(result.succeeded) + L" 成功";
-    if (result.failed > 0) status += L"，" + std::to_wstring(result.failed) + L" 失败";
-    set_status(status);
-    append_log(status);
-    EnableWindow(hOpen, TRUE);
-    std::wstring message = L"批量转换完成。\n\n成功：" + std::to_wstring(result.succeeded) +
-                           L"\n失败：" + std::to_wstring(result.failed) + L"\n总计：" +
-                           std::to_wstring(result.total) + L"\n\n输出目录：\n" + result.output_dir;
-    MessageBoxW(hwnd, message.c_str(), L"bag2mkv",
-                (result.failed == 0 ? MB_ICONINFORMATION : MB_ICONWARNING) | MB_OK);
-    if (close_when_done) {
-        DestroyWindow(hwnd);
-    }
-}
-
-void App::on_to_bag_done(const ToBagResult &result) {
-    if (worker.joinable()) worker.join();
-    batch_mode = false;
-    last_output_dir = std::filesystem::path(result.output_path).parent_path().wstring();
-    if (last_output_dir.empty()) last_output_dir = L".";
-    set_running(false);
-    cancel = false;
-    SendMessageW(hProgress, PBM_SETPOS, 1000, 0);
-    const auto &summary = result.summary;
-    set_status(L"MKV 转 bag 完成");
-    append_log(L"MKV 转 bag 完成: " + result.output_path);
-    append_log(L"帧: " + std::to_wstring(summary.color_frames) + L" color, " +
-               std::to_wstring(summary.depth_frames) + L" depth, " + std::to_wstring(summary.ir_frames) +
-               L" IR");
-    append_log(L"属性: " + std::to_wstring(summary.properties) + L"，profile: " +
-               std::to_wstring(summary.profiles) + L"，大小: " + human_size(summary.bag_size));
-    EnableWindow(hOpen, TRUE);
-    std::wstring message = L"MKV 转 bag 完成。\n\n输出：\n" + result.output_path + L"\n\n大小：" +
-                           human_size(summary.bag_size) + L"\n帧：" + std::to_wstring(summary.color_frames) +
-                           L" color / " + std::to_wstring(summary.depth_frames) + L" depth / " +
-                           std::to_wstring(summary.ir_frames) + L" IR";
-    MessageBoxW(hwnd, message.c_str(), L"bag2mkv", MB_ICONINFORMATION | MB_OK);
-    if (close_when_done) {
-        DestroyWindow(hwnd);
-    }
-}
-
-void App::on_error(const std::string &error) {
-    if (worker.joinable()) worker.join();
-    batch_mode = false;
-    set_running(false);
-    cancel = false;
-    set_status(L"转换失败");
-    append_log(L"错误: " + widen(error));
-    MessageBoxW(hwnd, (L"转换失败：\n\n" + widen(error)).c_str(), L"bag2mkv", MB_ICONERROR | MB_OK);
-    if (close_when_done) {
-        DestroyWindow(hwnd);
-    }
-}
-
-void App::on_cancelled() {
-    if (worker.joinable()) worker.join();
-    batch_mode = false;
-    set_running(false);
-    cancel = false;
-    reset_progress();
-    set_status(L"已取消");
-    append_log(L"已取消；临时文件已清理。");
-    if (close_when_done) {
-        DestroyWindow(hwnd);
-    }
-}
-
-void App::on_command(int id, int code) {
-    switch (id) {
-        case ID_BROWSE_INPUT:
-            if (code == BN_CLICKED) browse_input();
+    bool needs_overwrite = false;
+    for (const auto &job : jobs) {
+        std::error_code ec;
+        if (fs::equivalent(job.input, job.output, ec)) {
+            update_state(UiState::Error, L"Output must be different from the input.");
+            return;
+        }
+        if (fs::exists(job.output, ec) && !overwrite_) {
+            needs_overwrite = true;
             break;
-        case ID_BROWSE_OUTPUT:
-            if (code == BN_CLICKED) browse_output();
-            break;
-        case ID_BROWSE_CALIB:
-            if (code == BN_CLICKED) browse_calibration();
-            break;
-        case ID_CLEAR_CALIB:
-            if (code == BN_CLICKED) SetWindowTextW(hCalib, L"");
-            break;
-        case ID_START:
-            if (code == BN_CLICKED) start_conversion();
-            break;
-        case ID_CANCEL:
-            if (code == BN_CLICKED) request_cancel();
-            break;
-        case ID_BATCH:
-            if (code == BN_CLICKED) start_batch();
-            break;
-        case ID_TO_BAG:
-            if (code == BN_CLICKED) start_mkv2bag();
-            break;
-        case ID_OPEN:
-            if (code == BN_CLICKED) open_output_folder();
-            break;
-        case ID_COLOR:
-            if (code == CBN_SELCHANGE) {
-                bool bgra = SendMessageW(hColor, CB_GETCURSEL, 0, 0) == 0;
-                EnableWindow(hPreserve, bgra && !running);
-            }
-            break;
-        default:
-            break;
-    }
-}
-
-void App::on_drop(HDROP drop) {
-    if (running) {
-        DragFinish(drop);
-        return;
-    }
-    wchar_t file[MAX_PATH] = {};
-    if (DragQueryFileW(drop, 0, file, MAX_PATH) > 0) {
-        std::filesystem::path dropped(file);
-        if (std::filesystem::is_directory(dropped)) {
-            SetWindowTextW(hInput, file);
-        } else {
-            SetWindowTextW(hInput, file);
-            std::wstring old = get_text(hOutput);
-            if (old.empty() || old == suggested_output(get_text(hInput))) {
-                SetWindowTextW(hOutput, suggested_output(file).c_str());
-            }
         }
     }
-    DragFinish(drop);
-}
-
-void App::on_close() {
-    if (running) {
-        int answer = MessageBoxW(hwnd, L"正在转换，取消并退出吗？", L"bag2mkv",
-                                 MB_ICONQUESTION | MB_YESNO | MB_DEFBUTTON2);
+    if (needs_overwrite) {
+        int answer = MessageBoxW(hwnd_, L"One or more output destinations already exist.\n\nOverwrite them?",
+                                 L"Overwrite output", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2);
         if (answer != IDYES) return;
-        close_when_done = true;
-        request_cancel();
-        return;
+        for (auto &job : jobs) job.force = true;
+        overwrite_ = true;
     }
-    DestroyWindow(hwnd);
+
+    busy_ = true;
+    cancel_requested_ = false;
+    progress_ = 0;
+    update_state(UiState::Running, L"Starting conversion…");
+    append_log(L"◆ " + (jobs.size() == 1 ? L"Single conversion" : std::to_wstring(jobs.size()) + L" file batch"));
+    if (worker_.joinable()) worker_.join();
+    worker_ = std::thread([this, jobs = std::move(jobs)]() mutable { run_jobs(std::move(jobs)); });
 }
 
-LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
-    auto *app = reinterpret_cast<App *>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-    switch (msg) {
-        case WM_CREATE: {
-            auto *create = reinterpret_cast<CREATESTRUCTW *>(lparam);
-            app = reinterpret_cast<App *>(create->lpCreateParams);
-            app->hwnd = hwnd;
-            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(app));
-            app->create_controls();
-            app->layout();
-            DragAcceptFiles(hwnd, TRUE);
-            return 0;
-        }
-        case WM_SIZE:
-            if (app) app->layout();
-            return 0;
-        case WM_COMMAND:
-            if (app) app->on_command(LOWORD(wparam), HIWORD(wparam));
-            return 0;
-        case WM_DROPFILES:
-            if (app) app->on_drop(reinterpret_cast<HDROP>(wparam));
-            return 0;
-        case WM_APP_PROGRESS: {
-            std::unique_ptr<ProgressInfo> info(reinterpret_cast<ProgressInfo *>(lparam));
-            if (app && info) app->on_progress(*info);
-            return 0;
-        }
-        case WM_APP_LOG: {
-            std::unique_ptr<std::wstring> line(reinterpret_cast<std::wstring *>(lparam));
-            if (app && line) app->append_log(*line);
-            return 0;
-        }
-        case WM_APP_DONE: {
-            std::unique_ptr<ConvertSummary> summary(reinterpret_cast<ConvertSummary *>(lparam));
-            if (app && summary) app->on_done(*summary);
-            return 0;
-        }
-        case WM_APP_ERROR: {
-            std::unique_ptr<std::wstring> error(reinterpret_cast<std::wstring *>(lparam));
-            if (app && error) app->on_error(narrow(*error));
-            return 0;
-        }
-        case WM_APP_BATCH_DONE: {
-            std::unique_ptr<BatchResult> result(reinterpret_cast<BatchResult *>(lparam));
-            if (app && result) app->on_batch_done(*result);
-            return 0;
-        }
-        case WM_APP_TO_BAG_DONE: {
-            std::unique_ptr<ToBagResult> result(reinterpret_cast<ToBagResult *>(lparam));
-            if (app && result) app->on_to_bag_done(*result);
-            return 0;
-        }
-        case WM_APP_CANCELLED:
-            if (app) app->on_cancelled();
-            return 0;
-        case WM_CLOSE:
-            if (app) app->on_close();
-            return 0;
-        case WM_DESTROY:
-            if (app) {
-                if (app->worker.joinable()) {
-                    app->cancel = true;
-                    app->worker.join();
-                }
-                if (app->font) DeleteObject(app->font);
-            }
-            PostQuitMessage(0);
-            return 0;
-        case WM_CTLCOLORSTATIC: {
-            HDC dc = reinterpret_cast<HDC>(wparam);
-            SetBkMode(dc, TRANSPARENT);
-            SetTextColor(dc, GetSysColor(COLOR_BTNTEXT));
-            return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_BTNFACE));
-        }
-        case WM_CTLCOLOREDIT: {
-            HDC dc = reinterpret_cast<HDC>(wparam);
-            SetBkColor(dc, GetSysColor(COLOR_WINDOW));
-            SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));
-            return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_WINDOW));
-        }
-        case WM_GETMINMAXINFO: {
-            auto *mmi = reinterpret_cast<MINMAXINFO *>(lparam);
-            mmi->ptMinTrackSize.x = app ? app->S(700) : 700;
-            mmi->ptMinTrackSize.y = app ? app->S(480) : 480;
-            return 0;
-        }
-        default:
-            return DefWindowProcW(hwnd, msg, wparam, lparam);
+void StudioApp::cancel() {
+    if (!busy_) return;
+    cancel_requested_ = true;
+    stage_ = L"Cancelling…";
+    update_state(UiState::Running, L"Cancelling…");
+    append_log(L"… Cancel requested");
+}
+
+void StudioApp::open_output() {
+    std::wstring target = output_path_;
+    if (target.empty()) return;
+    std::error_code ec;
+    fs::path path(target);
+    if (fs::is_regular_file(path, ec)) path = path.parent_path();
+    if (!path.empty() && fs::exists(path, ec)) {
+        ShellExecuteW(hwnd_, L"open", path.wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     }
+}
+
+void StudioApp::append_log(const std::wstring &line) {
+    if (!log_edit_) return;
+    std::wstring text = L"[" + now_time() + L"]  " + line + L"\r\n";
+    int len = GetWindowTextLengthW(log_edit_);
+    SendMessageW(log_edit_, EM_SETSEL, static_cast<WPARAM>(len), static_cast<LPARAM>(len));
+    SendMessageW(log_edit_, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(text.c_str()));
+    SendMessageW(log_edit_, EM_SCROLLCARET, 0, 0);
+}
+
+void StudioApp::clear_log() {
+    if (log_edit_) SetWindowTextW(log_edit_, L"");
+}
+
+void StudioApp::run_jobs(std::vector<ConversionJob> jobs) {
+    int succeeded = 0;
+    int failed = 0;
+    bool cancelled = false;
+    const int total = static_cast<int>(jobs.size());
+    for (int i = 0; i < total; ++i) {
+        if (cancel_requested_) {
+            cancelled = true;
+            break;
+        }
+        const ConversionJob &job = jobs[static_cast<size_t>(i)];
+        auto *header = new std::wstring(L"→ " + file_name(job.input) + L"  →  " + file_name(job.output));
+        if (!PostMessageW(hwnd_, WM_APP_LOG, 0, reinterpret_cast<LPARAM>(header))) delete header;
+        JobResult result = run_job(
+            job,
+            [this](const std::wstring &line) {
+                auto *copy = new std::wstring(line);
+                if (!PostMessageW(hwnd_, WM_APP_LOG, 0, reinterpret_cast<LPARAM>(copy))) delete copy;
+            },
+            [this, i, total](int percent, const std::wstring &stage) {
+                if (cancel_requested_) return false;
+                auto *payload = new ProgressPayload;
+                payload->percent = total > 0 ? (i * 100 + percent) / total : percent;
+                payload->current = i + 1;
+                payload->total = total;
+                payload->stage = stage;
+                if (!PostMessageW(hwnd_, WM_APP_PROGRESS, 0, reinterpret_cast<LPARAM>(payload))) delete payload;
+                return true;
+            });
+        if (result.cancelled) {
+            cancelled = true;
+            break;
+        }
+        if (result.ok) {
+            ++succeeded;
+            auto *copy = new std::wstring(L"✓ " + result.message);
+            if (!PostMessageW(hwnd_, WM_APP_LOG, 0, reinterpret_cast<LPARAM>(copy))) delete copy;
+        } else {
+            ++failed;
+            auto *copy = new std::wstring(L"✕ " + result.message);
+            if (!PostMessageW(hwnd_, WM_APP_LOG, 0, reinterpret_cast<LPARAM>(copy))) delete copy;
+            if (total == 1) break;
+        }
+    }
+    auto *done = new DonePayload;
+    done->succeeded = succeeded;
+    done->failed = failed;
+    done->cancelled = cancelled;
+    if (cancelled) done->message = L"Cancelled";
+    else if (failed == 0) done->message = L"Complete";
+    else done->message = L"Finished with errors";
+    if (!PostMessageW(hwnd_, WM_APP_DONE, 0, reinterpret_cast<LPARAM>(done))) delete done;
+}
+
+void StudioApp::on_progress(const ProgressPayload &progress) {
+    progress_ = progress.percent;
+    stage_ = progress.stage;
+    if (progress.total > 1) {
+        stage_ += L"  ·  " + std::to_wstring(progress.current) + L" / " + std::to_wstring(progress.total);
+    }
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void StudioApp::on_done(const DonePayload &done) {
+    if (worker_.joinable()) worker_.join();
+    busy_ = false;
+    cancel_requested_ = false;
+    if (done.cancelled) {
+        update_state(UiState::Cancelled, L"Cancelled");
+    } else if (done.failed == 0) {
+        progress_ = 100;
+        update_state(UiState::Success, L"Complete  ·  " + std::to_wstring(done.succeeded) + L" succeeded");
+        append_log(L"✓ " + done.message);
+    } else {
+        update_state(UiState::Error, L"Finished with errors  ·  " + std::to_wstring(done.failed) + L" failed");
+        append_log(L"✕ " + done.message);
+    }
+    update_controls();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void StudioApp::commit_source_from_edit() {
+    std::wstring path = get_text(source_edit_);
+    if (view_ == View::Batch) {
+        if (path != batch_root_) refresh_batch(path);
+    } else if (path != source_path_) {
+        set_source(path);
+    }
+}
+
+void StudioApp::refresh_hover(int x, int y) {
+    int target = -1;
+    for (int i = 0; i < 4; ++i) {
+        if (point_in(target_rects_[i], x, y)) target = i;
+    }
+    int color = -1;
+    for (int i = 0; i < 2; ++i) {
+        if (point_in(color_rects_[i], x, y)) color = i;
+    }
+    int toggle = -1;
+    for (int i = 0; i < 4; ++i) {
+        if (point_in(toggle_rects_[i], x, y)) toggle = i;
+    }
+    int nav = -1;
+    for (int i = 0; i < 3; ++i) {
+        if (point_in(nav_rects_[i], x, y)) nav = i;
+    }
+    const bool link = view_ == View::About && point_in(link_rect_, x, y);
+    if (target != hover_target_ || color != hover_color_ || toggle != hover_toggle_ || nav != hover_nav_ ||
+        link != hover_link_) {
+        hover_target_ = target;
+        hover_color_ = color;
+        hover_toggle_ = toggle;
+        hover_nav_ = nav;
+        hover_link_ = link;
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+}
+
+void StudioApp::on_click(int x, int y) {
+    if (view_ == View::About) {
+        if (point_in(link_rect_, x, y)) {
+            ShellExecuteW(hwnd_, L"open", L"https://github.com/Erik-Lin/bag2mkv", nullptr, nullptr, SW_SHOWNORMAL);
+        }
+        return;
+    }
+    for (int i = 0; i < 3; ++i) {
+        if (point_in(nav_rects_[i], x, y)) {
+            set_view(static_cast<View>(i));
+            return;
+        }
+    }
+    const std::array<OutputKind, 4> kinds{OutputKind::K4aMkv, OutputKind::Ros1Bag, OutputKind::Ros2Bag,
+                                         OutputKind::OrbbecBag};
+    for (int i = 0; i < 4; ++i) {
+        if (point_in(target_rects_[i], x, y) && output_supported(input_kind_, kinds[i])) {
+            set_output_kind(kinds[i]);
+            return;
+        }
+    }
+    if (point_in(color_rects_[0], x, y) && color_applicable()) {
+        color_mjpg_ = false;
+        update_controls();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
+    if (point_in(color_rects_[1], x, y) && color_applicable()) {
+        color_mjpg_ = true;
+        update_controls();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
+    if (point_in(toggle_rects_[0], x, y) && verify_applicable()) {
+        verify_ = !verify_;
+    } else if (point_in(toggle_rects_[1], x, y)) {
+        overwrite_ = !overwrite_;
+    } else if (point_in(toggle_rects_[2], x, y) && preserve_applicable()) {
+        preserve_ = !preserve_;
+    } else if (point_in(toggle_rects_[3], x, y) && no_calibration_applicable()) {
+        no_calibration_ = !no_calibration_;
+    } else {
+        return;
+    }
+    update_controls();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+LRESULT StudioApp::handle(UINT msg, WPARAM wparam, LPARAM lparam) {
+    switch (msg) {
+    case WM_SIZE:
+        layout();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return 0;
+    case WM_PAINT: {
+        PAINTSTRUCT ps{};
+        HDC hdc = BeginPaint(hwnd_, &ps);
+        paint(hdc);
+        EndPaint(hwnd_, &ps);
+        return 0;
+    }
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORSTATIC: {
+        HDC hdc = reinterpret_cast<HDC>(wparam);
+        HWND control = reinterpret_cast<HWND>(lparam);
+        SetTextColor(hdc, kText);
+        SetBkColor(hdc, kField);
+        return reinterpret_cast<LRESULT>(control == log_edit_ ? log_brush_ : edit_brush_);
+    }
+    case WM_DRAWITEM:
+        paint_button(reinterpret_cast<const DRAWITEMSTRUCT *>(lparam));
+        return TRUE;
+    case WM_MOUSEMOVE: {
+        if (!tracking_mouse_) {
+            TRACKMOUSEEVENT track{sizeof(track), TME_LEAVE, hwnd_, 0};
+            TrackMouseEvent(&track);
+            tracking_mouse_ = true;
+        }
+        refresh_hover(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+        return 0;
+    }
+    case WM_MOUSELEAVE:
+        tracking_mouse_ = false;
+        hover_target_ = hover_color_ = hover_toggle_ = hover_nav_ = -1;
+        hover_link_ = false;
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return 0;
+    case WM_SETCURSOR:
+        if (LOWORD(lparam) == HTCLIENT && (hover_link_ || hover_nav_ >= 0 || hover_target_ >= 0 ||
+                                           hover_color_ >= 0 || hover_toggle_ >= 0)) {
+            SetCursor(LoadCursorW(nullptr, IDC_HAND));
+            return TRUE;
+        }
+        break;
+    case WM_LBUTTONDOWN:
+        on_click(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+        return 0;
+    case WM_COMMAND: {
+        const int id = LOWORD(wparam);
+        const int code = HIWORD(wparam);
+        if (id == ID_SOURCE_EDIT && code == EN_CHANGE) {
+            SetTimer(hwnd_, 1, 650, nullptr);
+            return 0;
+        }
+        if (id == ID_SOURCE_EDIT && code == EN_KILLFOCUS) {
+            KillTimer(hwnd_, 1);
+            on_source_committed();
+        }
+        if (id == ID_SOURCE_EDIT && (code == EN_SETFOCUS || code == EN_KILLFOCUS)) InvalidateRect(hwnd_, nullptr, FALSE);
+        if (id == ID_OUTPUT_EDIT && (code == EN_SETFOCUS || code == EN_KILLFOCUS))
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        if (id == ID_CALIB_EDIT && (code == EN_SETFOCUS || code == EN_KILLFOCUS))
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        if (code == BN_CLICKED) {
+            if (id == ID_SOURCE_FILE) browse_source_file();
+            else if (id == ID_SOURCE_FOLDER) browse_source_folder();
+            else if (id == ID_OUTPUT_BROWSE) browse_output();
+            else if (id == ID_CALIB_BROWSE) browse_calibration();
+            else if (id == ID_START) start();
+            else if (id == ID_CANCEL) cancel();
+            else if (id == ID_OPEN) open_output();
+            else if (id == ID_CLEAR) clear_log();
+        }
+        return 0;
+    }
+    case WM_DROPFILES: {
+        HDROP drop = reinterpret_cast<HDROP>(wparam);
+        UINT count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+        if (count > 0) {
+            wchar_t path[MAX_PATH] = {};
+            if (DragQueryFileW(drop, 0, path, MAX_PATH)) {
+                set_text(source_edit_, path);
+                if (view_ == View::Single) {
+                    source_path_ = path;
+                    set_source(path);
+                } else {
+                    set_source(path);
+                }
+            }
+        }
+        DragFinish(drop);
+        return 0;
+    }
+    case WM_TIMER:
+        if (wparam == 1) {
+            KillTimer(hwnd_, 1);
+            on_source_committed();
+        }
+        return 0;
+    case WM_APP_PROGRESS: {        std::unique_ptr<ProgressPayload> payload(reinterpret_cast<ProgressPayload *>(lparam));
+        if (payload) on_progress(*payload);
+        return 0;
+    }
+    case WM_APP_LOG: {
+        std::unique_ptr<std::wstring> line(reinterpret_cast<std::wstring *>(lparam));
+        if (line) append_log(*line);
+        return 0;
+    }
+    case WM_APP_DONE: {
+        std::unique_ptr<DonePayload> done(reinterpret_cast<DonePayload *>(lparam));
+        if (done) on_done(*done);
+        return 0;
+    }
+    case WM_DPICHANGED: {
+        dpi_ = HIWORD(wparam);
+        create_fonts();
+        RECT *suggested = reinterpret_cast<RECT *>(lparam);
+        SetWindowPos(hwnd_, nullptr, suggested->left, suggested->top, suggested->right - suggested->left,
+                     suggested->bottom - suggested->top, SWP_NOZORDER | SWP_NOACTIVATE);
+        layout();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return 0;
+    }
+    case WM_GETMINMAXINFO: {
+        auto *info = reinterpret_cast<MINMAXINFO *>(lparam);
+        info->ptMinTrackSize.x = S(1024);
+        info->ptMinTrackSize.y = S(720);
+        return 0;
+    }
+    case WM_CLOSE:
+        if (busy_) {
+            int answer = MessageBoxW(hwnd_, L"A conversion is still running.\n\nCancel it and close?",
+                                     L"Conversion running", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
+            if (answer != IDYES) return 0;
+            cancel_requested_ = true;
+            if (worker_.joinable()) worker_.join();
+        }
+        DestroyWindow(hwnd_);
+        return 0;
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+    default:
+        break;
+    }
+    return DefWindowProcW(hwnd_, msg, wparam, lparam);
+}
+
+StudioApp *g_app = nullptr;
+
+LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+    if (msg == WM_CREATE) {
+        g_app = new StudioApp(hwnd);
+        if (!g_app->create()) {
+            delete g_app;
+            g_app = nullptr;
+            return -1;
+        }
+        return 0;
+    }
+    if (!g_app) return DefWindowProcW(hwnd, msg, wparam, lparam);
+    LRESULT result = g_app->handle(msg, wparam, lparam);
+    if (msg == WM_NCDESTROY) {
+        delete g_app;
+        g_app = nullptr;
+    }
+    return result;
 }
 
 }  // namespace
 
 int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
     SetProcessDPIAware();
-    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-    INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_PROGRESS_CLASS | ICC_STANDARD_CLASSES};
-    InitCommonControlsEx(&icc);
-
-    App app;
-    app.instance = instance;
-    HDC screen = GetDC(nullptr);
-    app.dpi = GetDeviceCaps(screen, LOGPIXELSY);
-    ReleaseDC(nullptr, screen);
-    if (app.dpi <= 0) app.dpi = 96;
-
-    NONCLIENTMETRICSW metrics{};
-    metrics.cbSize = sizeof(metrics);
-    if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0)) {
-        metrics.lfMessageFont.lfHeight = -MulDiv(9, app.dpi, 72);
-        app.font = CreateFontIndirectW(&metrics.lfMessageFont);
-    }
+    INITCOMMONCONTROLSEX common{sizeof(common), ICC_STANDARD_CLASSES};
+    InitCommonControlsEx(&common);
 
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
-    wc.style = CS_HREDRAW | CS_VREDRAW;
-    wc.lpfnWndProc = wnd_proc;
+    wc.style = CS_DBLCLKS;
+    wc.lpfnWndProc = window_proc;
     wc.hInstance = instance;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    wc.hbrBackground = GetSysColorBrush(COLOR_BTNFACE);
-    wc.lpszClassName = L"Bag2MkvGuiWindow";
     wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-    wc.hIconSm = wc.hIcon;
-    if (!RegisterClassExW(&wc)) {
-        MessageBoxW(nullptr, L"窗口类注册失败。", L"bag2mkv", MB_ICONERROR | MB_OK);
-        return 1;
-    }
+    wc.hIconSm = LoadIconW(nullptr, IDI_APPLICATION);
+    wc.hbrBackground = nullptr;
+    wc.lpszClassName = L"Bag2MkvStudio";
+    if (!RegisterClassExW(&wc)) return 1;
 
-    std::wstring window_title = L"bag2mkv v" + widen(version()) + L" - Orbbec bag 与 K4A MKV 互转";
-    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, window_title.c_str(),
-                                WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT,
-                                app.S(760), app.S(520), nullptr, nullptr, instance, &app);
-    if (!hwnd) {
-        MessageBoxW(nullptr, L"窗口创建失败。", L"bag2mkv", MB_ICONERROR | MB_OK);
-        return 1;
-    }
-    ShowWindow(hwnd, SW_SHOW);
+    RECT work{};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+    const int width = std::min(1240, static_cast<int>(work.right - work.left - 24));
+    const int height = std::min(840, static_cast<int>(work.bottom - work.top - 24));
+    const int x = work.left + (static_cast<int>(work.right - work.left) - width) / 2;
+    const int y = work.top + (static_cast<int>(work.bottom - work.top) - height) / 2;
+    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"bag2mkv v0.6.0 — RGB-D Conversion Studio",
+                                WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, x, y, width, height,
+                                nullptr, nullptr, instance, nullptr);
+    if (!hwnd) return 1;
+
+    BOOL dark = TRUE;
+    DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
+
+    const bool compact_desktop = (work.right - work.left) < 1400 || (work.bottom - work.top) < 900;
+    ShowWindow(hwnd, compact_desktop ? SW_MAXIMIZE : SW_SHOW);
     UpdateWindow(hwnd);
 
-    // Optional launch arguments:
-    //   [input.bag] [output.mkv] [--mjpg] [--start]
-    //   --batch <input-dir> --batch-output <output-dir>
-    //   --to-bag <input.mkv> [--to-bag-output <output.bag>]
-    // These also make "Open with" and scripted smoke tests possible.
     int argc = 0;
     LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (argv != nullptr) {
-        std::vector<std::wstring> positional;
+        bool start_now = false;
+        std::wstring single_path;
         std::wstring batch_input;
-        std::wstring batch_output;
-        std::wstring to_bag_input;
-        std::wstring to_bag_output;
-        bool mjpg = false;
-        bool autostart = false;
+        std::wstring output_dir;
+        std::wstring target;
+        bool show_about = false;
         for (int i = 1; i < argc; ++i) {
-            std::wstring arg = argv[i];
+            const std::wstring arg = argv[i];
             if (arg == L"--start") {
-                autostart = true;
-            } else if (arg == L"--mjpg" || arg == L"--color-mjpg") {
-                mjpg = true;
+                start_now = true;
+            } else if (arg == L"--about") {
+                show_about = true;
             } else if (arg == L"--batch" && i + 1 < argc) {
                 batch_input = argv[++i];
-            } else if (arg == L"--batch-output" && i + 1 < argc) {
-                batch_output = argv[++i];
-            } else if (arg == L"--to-bag" && i + 1 < argc) {
-                to_bag_input = argv[++i];
-            } else if (arg == L"--to-bag-output" && i + 1 < argc) {
-                to_bag_output = argv[++i];
-            } else if (arg.rfind(L"--", 0) == 0) {
-                // ignore unknown GUI switches
-            } else {
-                positional.push_back(arg);
+            } else if (arg == L"--output" && i + 1 < argc) {
+                output_dir = argv[++i];
+            } else if (arg == L"--target" && i + 1 < argc) {
+                target = argv[++i];
+            } else if (!arg.empty() && arg[0] == L'-') {
+                continue;
+            } else if (single_path.empty()) {
+                single_path = arg;
             }
         }
-        if (!positional.empty()) {
-            SetWindowTextW(app.hInput, positional[0].c_str());
-            std::wstring out = positional.size() > 1 ? positional[1] : app.suggested_output(positional[0]);
-            SetWindowTextW(app.hOutput, out.c_str());
-        }
-        if (mjpg) {
-            SendMessageW(app.hColor, CB_SETCURSEL, 1, 0);
-            SendMessageW(hwnd, WM_COMMAND, MAKEWPARAM(ID_COLOR, CBN_SELCHANGE), 0);
+        if (g_app != nullptr) {
+            if (!batch_input.empty()) g_app->load_batch(batch_input, output_dir);
+            else if (!single_path.empty()) g_app->load_path(single_path);
+            if (!target.empty()) g_app->select_target(target);
+            if (!output_dir.empty() && batch_input.empty()) g_app->set_output_path(output_dir);
+            if (show_about) g_app->show_about();
+            if (start_now) g_app->begin();
         }
         LocalFree(argv);
-        if (!to_bag_input.empty()) {
-            if (to_bag_output.empty()) {
-                std::filesystem::path output(to_bag_input);
-                output.replace_extension(".bag");
-                to_bag_output = output.wstring();
-            }
-            app.start_mkv2bag_paths(to_bag_input, to_bag_output);
-        } else if (!batch_input.empty() && !batch_output.empty()) {
-            app.start_directory_batch(batch_input, batch_output);
-        } else if (autostart && !positional.empty()) {
-            PostMessageW(hwnd, WM_COMMAND, MAKEWPARAM(ID_START, BN_CLICKED), 0);
-        }
     }
 
     MSG msg{};
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
-        if (!IsDialogMessageW(hwnd, &msg)) {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
     }
-    CoUninitialize();
     return static_cast<int>(msg.wParam);
 }
